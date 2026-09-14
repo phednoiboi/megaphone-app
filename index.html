@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Megaphone</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+      #root { height: 100%; width: 100%; min-width: 0; }
+      body {
+        background: #0f0f12;
+        display: flex;
+        justify-content: center;
+        padding: 24px 12px;
+        box-sizing: border-box;
+        height: 100vh;
+        height: 100dvh;
+      }
+      @media (max-width: 640px) {
+        body { padding: 0; background: #EEF1F6; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -1,0 +1,2010 @@
+import { useState, useEffect, useRef, useMemo } from "react";
+import { MapPin, Search, MessageCircle, X, Send, ArrowLeft, Megaphone, Check, Sparkles, User, LogOut, Pin, BadgeCheck, Crown, ExternalLink, TrendingUp, PartyPopper, Flag, Bell, Plus, SlidersHorizontal, Globe, ScanLine, Flame } from "lucide-react";
+
+// ---------- design tokens (liquid glass) ----------
+const C = {
+  ink: "#1C1C1E",
+  inkSoft: "#6E6E73",
+  inkFaint: "#9A9AA1",
+  hairline: "rgba(60,60,67,0.14)",
+  glass: "rgba(255,255,255,0.55)",
+  glassStrong: "rgba(255,255,255,0.72)",
+  glassDark: "rgba(28,28,30,0.55)",
+  blue: "#0A84FF",
+  red: "#FF3B30",
+  gold: "#C98A0B",
+  green: "#30B356",
+  purple: "#AF52DE",
+};
+
+const FONT =
+  "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif";
+const MONO = "ui-monospace, 'SF Mono', 'IBM Plex Mono', Menlo, monospace";
+
+// reusable frosted glass surface
+function Glass({ children, style, strong, dark, radius = 20, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        background: dark ? C.glassDark : strong ? C.glassStrong : C.glass,
+        backdropFilter: "blur(24px) saturate(180%)",
+        WebkitBackdropFilter: "blur(24px) saturate(180%)",
+        border: `1px solid ${dark ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.6)"}`,
+        borderRadius: radius,
+        boxShadow: "0 8px 30px rgba(31,38,45,0.10), inset 0 1px 0 rgba(255,255,255,0.5)",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// typeahead that suggests real card names as you type — tries a live lookup
+// against the TCGdex API for Pokémon, merges in the local dataset, and falls
+// back to local-only silently if the network call fails or for One Piece
+// (see dataset comment above for why that side is local-only for now)
+function CardTypeahead({ value, onChange, game, placeholder, style }) {
+  const [suggestions, setSuggestions] = useState([]);
+  const [open, setOpen] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    if (!value || value.trim().length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      const q = value.trim().toLowerCase();
+      const localDataset = game === "onepiece" ? ONE_PIECE_CARD_DATASET : POKEMON_CARD_DATASET;
+      let results = localDataset.filter((n) => n.toLowerCase().includes(q));
+
+      if (game !== "onepiece") {
+        try {
+          const res = await fetch(`https://api.tcgdex.net/v2/en/cards?name=like:${encodeURIComponent(q)}`);
+          if (res.ok) {
+            const data = await res.json();
+            const liveNames = Array.isArray(data) ? data.map((c) => c.name).filter(Boolean) : [];
+            results = [...new Set([...liveNames, ...results])];
+          }
+        } catch {
+          // offline or blocked — local dataset above already covers this
+        }
+      }
+      setSuggestions(results.slice(0, 6));
+    }, 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [value, game]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        style={style}
+      />
+      {open && suggestions.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            marginTop: 4,
+            background: "rgba(255,255,255,0.92)",
+            backdropFilter: "blur(20px)",
+            border: `1px solid ${C.hairline}`,
+            borderRadius: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+            zIndex: 20,
+            overflow: "hidden",
+          }}
+        >
+          {suggestions.map((s) => (
+            <button
+              key={s}
+              className="mp-press"
+              onClick={() => {
+                onChange(s);
+                setOpen(false);
+              }}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "10px 14px", fontSize: 13.5, color: C.ink, borderBottom: `1px solid ${C.hairline}` }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WantCard({ w, auth, onReport, onChat, showName }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <Glass radius={20} style={{ padding: "16px 18px", border: w.boosted ? `1.5px solid ${C.gold}` : undefined, boxShadow: w.boosted ? "0 8px 26px rgba(201,138,11,0.22)" : undefined }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          {w.boosted ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8, color: C.gold, fontSize: 10.5, fontWeight: 700 }}>
+              <Pin size={11} /> BOOSTED
+            </div>
+          ) : (
+            <div />
+          )}
+          {w.userId !== "me" && (
+            <button
+              className="mp-press"
+              onClick={() => onReport(w.id)}
+              title="Report this shoutout"
+              style={{ background: "none", border: "none", padding: 2, marginTop: -4, marginRight: -4, color: C.inkFaint }}
+              aria-label="Report"
+            >
+              <Flag size={13} />
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <Megaphone size={12} color={C.red} />
+          <div style={{ fontSize: 11, color: C.red, fontWeight: 700, letterSpacing: "0.03em" }}>LOOKING FOR</div>
+          {w.game && (
+            <span style={{ fontSize: 10, color: C.inkFaint, fontWeight: 650 }}>· {w.game === "onepiece" ? "One Piece" : "Pokémon"}</span>
+          )}
+        </div>
+        <div style={{ fontSize: 16.5, fontWeight: 650, lineHeight: 1.3, letterSpacing: "-0.01em" }}>{w.card}</div>
+        {w.detail && <div style={{ fontSize: 13.5, color: C.inkSoft, marginTop: 5, lineHeight: 1.4 }}>{w.detail}</div>}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{personName(w.userId)}</span>
+              {isDealer(w.userId, auth) && <BadgeCheck size={13} color={C.blue} />}
+            </div>
+            <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>
+              {showName && <>{showName} · </>}
+              {timeAgo(w.ts)}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {w.maxPrice && (
+              <div style={{ fontFamily: MONO, fontSize: 12.5, color: C.gold, fontWeight: 700, background: "rgba(201,138,11,0.12)", padding: "4px 9px", borderRadius: 8 }}>
+                up to {w.maxPrice}
+              </div>
+            )}
+            {w.userId !== "me" && (
+              <button
+                className="mp-press"
+                onClick={() => onChat(w.userId)}
+                style={{
+                  background: C.blue,
+                  color: "white",
+                  border: "none",
+                  borderRadius: 999,
+                  padding: "8px 14px",
+                  fontSize: 12.5,
+                  fontWeight: 650,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  boxShadow: "0 3px 10px rgba(10,132,255,0.35)",
+                }}
+              >
+                <MessageCircle size={13} /> I've got one
+              </button>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 14, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.hairline}` }}>
+          <a href="https://www.tcgplayer.com" target="_blank" rel="noreferrer" style={{ fontSize: 11.5, color: C.inkSoft, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3, textDecoration: "none" }}>
+            Check price <ExternalLink size={10} />
+          </a>
+          <a href="https://www.psacard.com" target="_blank" rel="noreferrer" style={{ fontSize: 11.5, color: C.inkSoft, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3, textDecoration: "none" }}>
+            Get graded <ExternalLink size={10} />
+          </a>
+        </div>
+      </Glass>
+    </div>
+  );
+}
+
+// ---------- date helpers for real "happening today" logic ----------
+function atTime(daysFromNow, hour, minute) {
+  const d = new Date();
+  d.setDate(d.getDate() + daysFromNow);
+  d.setHours(hour, minute, 0, 0);
+  return d;
+}
+function daysUntilWeekday(targetDow) {
+  const today = new Date().getDay();
+  return (targetDow - today + 7) % 7;
+}
+function isSameDay(a, b) {
+  return a.toDateString() === b.toDateString();
+}
+function formatShowWindow(start, end) {
+  const now = new Date();
+  const dayLabel = isSameDay(start, now)
+    ? "Today"
+    : isSameDay(start, atTime(1, 0, 0))
+    ? "Tomorrow"
+    : start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const fmt = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${dayLabel}, ${fmt(start)} – ${fmt(end)}`;
+}
+
+// ---------- mock data ----------
+// in production these come from a live events feed (organizer submissions or a
+// TCG event API) rather than being hardcoded — this just simulates "today" logic
+// against real Date objects so the grouping/badges below are actually live.
+const SHOWS = [
+  { id: "s1", name: "One Piece Card Game SG Regional Qualifier", venue: "Suntec Singapore Convention Centre", lat: 1.2966, lng: 103.8577, start: atTime(0, 9, 0), end: atTime(0, 17, 0) },
+  { id: "s2", name: "Pokémon TCG Community League Night", venue: "Games Mansion, Peninsula Shopping Centre", lat: 1.2936, lng: 103.8500, start: atTime(0, 10, 0), end: atTime(0, 16, 0) },
+  { id: "s3", name: "Bishan Card Traders Meetup", venue: "Bishan Community Club, Hall 2", lat: 1.3506, lng: 103.8496, start: atTime(1, 9, 0), end: atTime(1, 18, 0) },
+  { id: "s4", name: "Toa Payoh Bounty Hunters One Piece Meet", venue: "Toa Payoh HDB Hub, Atrium", lat: 1.3326, lng: 103.8489, start: atTime(daysUntilWeekday(6) || 7, 11, 0), end: atTime(daysUntilWeekday(6) || 7, 19, 0) },
+];
+
+const FREE_SHOUT_LIMIT = 3;
+
+// basic on-topic / spam guard — real moderation happens server-side (see notes),
+// this just catches obvious junk before it's even submitted
+const BLOCKED_TERMS = ["http://", "https://", "www.", "nsfw", "xxx", "porn", "crypto", "follow me", "onlyfans", "free money"];
+function violatesContentPolicy(text) {
+  const lower = text.toLowerCase();
+  return BLOCKED_TERMS.some((term) => lower.includes(term));
+}
+
+const PEOPLE = [
+  { id: "u_marcus", name: "Marcus T.", dealer: true },
+  { id: "u_dana", name: "Dana R." },
+  { id: "u_priya", name: "Priya K." },
+  { id: "u_lou", name: "Old Man Lou" },
+  { id: "u_jess", name: "Jess W." },
+];
+
+const SEED_WANTS = [
+  { id: "w1", showId: "s1", userId: "u_marcus", game: "pokemon", card: "Charizard 1st Edition Base Set Holo", detail: "Any grade considered, just want it in hand today", maxPrice: "$8,000", ts: Date.now() - 1000 * 60 * 42 },
+  { id: "w2", showId: "s1", userId: "u_dana", game: "pokemon", card: "Shadowless Blastoise Holo", detail: "PSA 8+ or raw NM, will look at trades too", maxPrice: "$1,800", ts: Date.now() - 1000 * 60 * 25 },
+  { id: "w3", showId: "s1", userId: "u_priya", game: "pokemon", card: "Pikachu Illustrator Promo", detail: "Long shot, but if you've got one — name your price", maxPrice: "$—", ts: Date.now() - 1000 * 60 * 12 },
+  { id: "w4", showId: "s1", userId: "u_lou", game: "pokemon", card: "Umbreon VMAX Alt Art (Evolving Skies)", detail: "Even a lightly played copy — sentimental pickup for my granddaughter", maxPrice: "$350", ts: Date.now() - 1000 * 60 * 5 },
+  { id: "w5", showId: "s2", userId: "u_jess", game: "onepiece", card: "OP01 Shanks Parallel (Romance Dawn)", detail: "Looking for the alternate art SEC, raw or graded", maxPrice: "$900", ts: Date.now() - 1000 * 60 * 70 },
+  { id: "w6", showId: "s2", userId: "u_marcus", game: "onepiece", card: "Luffy Gear 5 Manga Rare (OP-07)", detail: "Just need one to complete my playset", maxPrice: "$220", ts: Date.now() - 1000 * 60 * 8 },
+];
+
+// local fallback/reference datasets used for search suggestions.
+// Pokémon suggestions also try a live lookup against the free TCGdex API
+// (api.tcgdex.net — no key required) and merge the results in; if that
+// request fails (offline, CORS, etc.) it silently falls back to this list.
+// There's no equally reliable free public REST API for One Piece TCG yet,
+// so those suggestions are local-only for now — swap in a real one piece
+// TCG API here once one's available.
+const POKEMON_CARD_DATASET = [
+  "Charizard", "Charizard VMAX", "Charizard ex", "Blastoise", "Venusaur",
+  "Pikachu", "Pikachu Illustrator", "Umbreon VMAX", "Umbreon ex", "Mewtwo",
+  "Mew", "Rayquaza VMAX", "Lugia", "Gengar", "Gyarados", "Eevee", "Snorlax",
+  "Dragonite", "Gardevoir ex", "Lucario", "Greninja", "Sylveon VMAX",
+];
+const ONE_PIECE_CARD_DATASET = [
+  "Luffy Gear 5", "Monkey D. Luffy", "Roronoa Zoro", "Shanks", "Trafalgar Law",
+  "Nami", "Sanji", "Nico Robin", "Portgas D. Ace", "Kaido", "Whitebeard",
+  "Boa Hancock", "Yamato", "Eustass Kid", "Dracule Mihawk", "Charlotte Katakuri",
+];
+
+const SEED_THREADS = {
+  u_marcus: [
+    { from: "u_marcus", text: "Hey — I've got a raw Charizard Base Set, edge wear on the back but front's clean. Interested?", ts: Date.now() - 1000 * 60 * 20 },
+    { from: "me", text: "Depends on the wear — can you send a photo of the back corners?", ts: Date.now() - 1000 * 60 * 18 },
+  ],
+};
+
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function timeAgo(ts) {
+  const mins = Math.max(1, Math.round((Date.now() - ts) / 60000));
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  return `${hrs}h ago`;
+}
+
+function personName(id) {
+  if (id === "me") return "You";
+  const p = PEOPLE.find((p) => p.id === id);
+  return p ? p.name : id;
+}
+
+function isDealer(id, auth) {
+  if (id === "me") return auth?.dealer;
+  const p = PEOPLE.find((p) => p.id === id);
+  return !!(p && p.dealer);
+}
+
+export default function MegaphoneApp() {
+  const [screen, setScreen] = useState("shows");
+  const [activeShowId, setActiveShowId] = useState(null);
+  const [coords, setCoords] = useState(null);
+  const [geoState, setGeoState] = useState("idle");
+  const [wants, setWants] = useState(SEED_WANTS);
+  const [threads, setThreads] = useState(SEED_THREADS);
+  const [showPostForm, setShowPostForm] = useState(false);
+  const [activeThread, setActiveThread] = useState(null);
+  const [query, setQuery] = useState("");
+  const [chatOrigin, setChatOrigin] = useState("feed"); // "feed" | "account" | "shows"
+  const [auth, setAuth] = useState({ loggedIn: false, name: "", email: "", premium: false, dealer: false });
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [planPerks, setPlanPerks] = useState(null); // "premium" | "dealer" | null
+  const [keywordAlerts, setKeywordAlerts] = useState([]);
+  const [readAlertIds, setReadAlertIds] = useState([]);
+  const [alertsOrigin, setAlertsOrigin] = useState("shows");
+  const [gameFilter, setGameFilter] = useState("all"); // "all" | "pokemon" | "onepiece"
+  const [boostedOnly, setBoostedOnly] = useState(false);
+  const [dealersOnly, setDealersOnly] = useState(false);
+  const [searchAllShows, setSearchAllShows] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [scanningCard, setScanningCard] = useState(false);
+  const scanInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGeoState("denied");
+      return;
+    }
+    setGeoState("asking");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoState("ok");
+      },
+      () => setGeoState("denied"),
+      { timeout: 4000 }
+    );
+  }, []);
+
+  const showsWithDistance = useMemo(() => {
+    const now = new Date();
+    return SHOWS.filter((s) => s.end >= now)
+      .map((s) => ({
+        ...s,
+        distance: coords ? haversine(coords.lat, coords.lng, s.lat, s.lng) : null,
+        isToday: isSameDay(s.start, now),
+        whenLabel: formatShowWindow(s.start, s.end),
+      }))
+      .sort((a, b) => {
+        if (a.isToday !== b.isToday) return a.isToday ? -1 : 1;
+        if (a.distance == null || b.distance == null) return a.start - b.start;
+        return a.distance - b.distance;
+      });
+  }, [coords]);
+  const todayShows = showsWithDistance.filter((s) => s.isToday);
+  const upcomingShows = showsWithDistance.filter((s) => !s.isToday);
+
+  // trending — most-shouted cards across today's shows (falls back to all
+  // shows if nothing's happening today yet), each linked to whichever show
+  // currently has the most demand for it
+  const trending = useMemo(() => {
+    const todayIds = new Set(todayShows.map((s) => s.id));
+    const pool = wants.filter((w) => !w.hidden && (todayIds.size === 0 || todayIds.has(w.showId)));
+    const counts = {};
+    pool.forEach((w) => {
+      if (!counts[w.card]) counts[w.card] = { card: w.card, count: 0, byShow: {} };
+      counts[w.card].count += 1;
+      counts[w.card].byShow[w.showId] = (counts[w.card].byShow[w.showId] || 0) + 1;
+    });
+    return Object.values(counts)
+      .map((c) => ({
+        ...c,
+        topShowId: Object.entries(c.byShow).sort((a, b) => b[1] - a[1])[0][0],
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+  }, [wants, todayShows]);
+
+  // basic community moderation: hide a post once it's been reported a few times
+  function reportWant(id) {
+    setWants((prev) =>
+      prev.map((w) => (w.id === id ? { ...w, reports: (w.reports || 0) + 1, hidden: (w.reports || 0) + 1 >= 3 } : w))
+    );
+  }
+
+  // keyword alerts — premium/dealer accounts can watch for cards mentioning
+  // specific terms across every show, not just the one they're currently viewing
+  const canUseAlerts = auth.premium || auth.dealer;
+  function addKeyword(kw) {
+    const clean = kw.trim();
+    if (!clean) return;
+    setKeywordAlerts((prev) => (prev.some((k) => k.toLowerCase() === clean.toLowerCase()) ? prev : [...prev, clean]));
+  }
+  function removeKeyword(kw) {
+    setKeywordAlerts((prev) => prev.filter((k) => k !== kw));
+  }
+  const alertMatches = useMemo(() => {
+    if (!canUseAlerts || keywordAlerts.length === 0) return [];
+    const lowerKeywords = keywordAlerts.map((k) => k.toLowerCase());
+    return wants
+      .filter((w) => w.userId !== "me" && !w.hidden)
+      .filter((w) => {
+        const haystack = `${w.card} ${w.detail || ""}`.toLowerCase();
+        return lowerKeywords.some((k) => haystack.includes(k));
+      })
+      .map((w) => ({
+        ...w,
+        showName: SHOWS.find((s) => s.id === w.showId)?.name || "",
+        matchedKeyword: keywordAlerts.find((k) => `${w.card} ${w.detail || ""}`.toLowerCase().includes(k.toLowerCase())),
+      }))
+      .sort((a, b) => b.ts - a.ts);
+  }, [wants, keywordAlerts, canUseAlerts]);
+  const unreadAlertCount = alertMatches.filter((m) => !readAlertIds.includes(m.id)).length;
+  function openAlerts(origin) {
+    setAlertsOrigin(origin);
+    setReadAlertIds(alertMatches.map((m) => m.id));
+    setScreen("alerts");
+  }
+
+  const activeShow = SHOWS.find((s) => s.id === activeShowId);
+
+  function matchesFilters(w) {
+    if (gameFilter !== "all" && w.game !== gameFilter) return false;
+    if (boostedOnly && !w.boosted) return false;
+    if (dealersOnly && !isDealer(w.userId, auth)) return false;
+    if (query && !w.card.toLowerCase().includes(query.toLowerCase())) return false;
+    return true;
+  }
+
+  const feedWants = wants
+    .filter((w) => w.showId === activeShowId)
+    .filter((w) => !w.hidden)
+    .filter(matchesFilters)
+    .sort((a, b) => {
+      if (!!b.boosted !== !!a.boosted) return (b.boosted ? 1 : 0) - (a.boosted ? 1 : 0);
+      return b.ts - a.ts;
+    });
+
+  // "search all shows" — same filters, but across every show at once, each
+  // result tagged with which show it's at
+  const crossShowResults = useMemo(() => {
+    if (!searchAllShows || !query) return [];
+    return wants
+      .filter((w) => !w.hidden)
+      .filter(matchesFilters)
+      .map((w) => ({ ...w, showName: SHOWS.find((s) => s.id === w.showId)?.name || "" }))
+      .sort((a, b) => b.ts - a.ts);
+  }, [wants, searchAllShows, query, gameFilter, boostedOnly, dealersOnly, auth]);
+
+  const activeFilterCount = (gameFilter !== "all" ? 1 : 0) + (boostedOnly ? 1 : 0) + (dealersOnly ? 1 : 0);
+
+  const demandInsights = useMemo(() => {
+    const counts = {};
+    wants.filter((w) => w.showId === activeShowId).forEach((w) => {
+      counts[w.card] = (counts[w.card] || 0) + 1;
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+  }, [wants, activeShowId]);
+
+  function addWant(entry) {
+    setWants((prev) => [{ id: `w${Date.now()}`, showId: activeShowId, userId: "me", ts: Date.now(), ...entry }, ...prev]);
+    setShowPostForm(false);
+  }
+
+  function markFound(wantId) {
+    setWants((prev) => prev.map((w) => (w.id === wantId ? { ...w, found: true } : w)));
+  }
+
+  // "scan to search" — captures a photo and identifies the card. Real version
+  // would run this through an image-recognition/OCR API server-side; this demo
+  // simulates the round trip and picks a plausible match from the local dataset.
+  function handleScanFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setScanningCard(true);
+    setTimeout(() => {
+      const dataset =
+        gameFilter === "onepiece" ? ONE_PIECE_CARD_DATASET : gameFilter === "pokemon" ? POKEMON_CARD_DATASET : [...POKEMON_CARD_DATASET, ...ONE_PIECE_CARD_DATASET];
+      setQuery(dataset[Math.floor(Math.random() * dataset.length)]);
+      setScanningCard(false);
+    }, 1100);
+    e.target.value = "";
+  }
+
+  function openChat(userId, origin = "feed") {
+    setChatOrigin(origin);
+    setActiveThread(userId);
+    setScreen("chat");
+  }
+
+  function sendMessage(text) {
+    if (!text.trim()) return;
+    setThreads((prev) => {
+      const existing = prev[activeThread] || [];
+      return { ...prev, [activeThread]: [...existing, { from: "me", text, ts: Date.now() }] };
+    });
+  }
+
+  const myThreadIds = Object.keys(threads).filter((id) => threads[id].length > 0);
+  const myWants = wants
+    .filter((w) => w.userId === "me")
+    .map((w) => ({ ...w, showName: SHOWS.find((s) => s.id === w.showId)?.name || "" }))
+    .sort((a, b) => b.ts - a.ts);
+  const isAccountTab =
+    screen === "account" ||
+    (chatOrigin === "account" && (screen === "chatlist" || screen === "chat")) ||
+    (screen === "alerts" && alertsOrigin === "account");
+
+  return (
+    <div
+      className="mp-app"
+      style={{
+        fontFamily: FONT,
+        color: C.ink,
+        height: "100%",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        maxWidth: "480px",
+        width: "100%",
+        margin: "0 auto",
+        position: "relative",
+        background: "#EEF1F6",
+      }}
+    >
+      <style>{`
+        * { box-sizing: border-box; }
+        button { font-family: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        input, textarea { font-family: inherit; }
+        input::placeholder, textarea::placeholder { color: ${C.inkFaint}; }
+        .mp-scroll::-webkit-scrollbar { width: 0; }
+        .mp-press { transition: transform 0.12s ease, opacity 0.12s ease; }
+        .mp-press:active { transform: scale(0.96); opacity: 0.85; }
+        .mp-spin { animation: mp-spin 1s linear infinite; }
+        @keyframes mp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .mp-app { border-radius: 28px; }
+        @media (max-width: 640px) {
+          .mp-app { border-radius: 0; }
+        }
+      `}</style>
+
+      {/* aurora background blobs */}
+      <div style={{ position: "absolute", inset: 0, overflow: "hidden", zIndex: 0 }}>
+        <div style={{ position: "absolute", width: 320, height: 320, top: -100, left: -80, borderRadius: "50%", background: "radial-gradient(circle, rgba(10,132,255,0.55), transparent 70%)", filter: "blur(10px)" }} />
+        <div style={{ position: "absolute", width: 300, height: 300, top: 40, right: -100, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,59,48,0.35), transparent 70%)", filter: "blur(10px)" }} />
+        <div style={{ position: "absolute", width: 280, height: 280, bottom: 60, left: -60, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,214,10,0.4), transparent 70%)", filter: "blur(10px)" }} />
+        <div style={{ position: "absolute", width: 260, height: 260, bottom: -80, right: -60, borderRadius: "50%", background: "radial-gradient(circle, rgba(175,82,222,0.35), transparent 70%)", filter: "blur(10px)" }} />
+      </div>
+
+      {/* top glass nav bar */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 2,
+          padding: "calc(16px + env(safe-area-inset-top)) 18px 16px",
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          background: "rgba(255,255,255,0.35)",
+          backdropFilter: "blur(28px) saturate(180%)",
+          WebkitBackdropFilter: "blur(28px) saturate(180%)",
+          borderBottom: `1px solid ${C.hairline}`,
+          transform: "translateZ(0)",
+          WebkitTransform: "translateZ(0)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {screen !== "shows" && screen !== "account" && (
+            <button
+              className="mp-press"
+              onClick={() => {
+                if (screen === "chat") setScreen("chatlist");
+                else if (screen === "chatlist") setScreen(chatOrigin);
+                else if (screen === "feed") setScreen("shows");
+                else if (screen === "alerts") setScreen(alertsOrigin);
+              }}
+              style={{ background: "rgba(255,255,255,0.6)", border: "none", borderRadius: 999, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}
+              aria-label="Back"
+            >
+              <ArrowLeft size={16} color={C.ink} />
+            </button>
+          )}
+          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em" }}>
+            {screen === "shows" && "Megaphone"}
+            {screen === "feed" && (activeShow?.name || "")}
+            {(screen === "chatlist" || screen === "chat") && "Messages"}
+            {screen === "account" && "Account"}
+            {screen === "alerts" && "Card Alerts"}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {canUseAlerts && (screen === "shows" || screen === "feed" || screen === "account") && (
+            <button
+              className="mp-press"
+              onClick={() => openAlerts(screen)}
+              style={{ background: "rgba(255,255,255,0.6)", border: "none", borderRadius: 999, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}
+              aria-label="Card alerts"
+            >
+              <Bell size={17} color={C.purple} />
+              {unreadAlertCount > 0 && (
+                <span style={{ position: "absolute", top: 2, right: 2, background: C.red, width: 8, height: 8, borderRadius: "50%", border: "1.5px solid white" }} />
+              )}
+            </button>
+          )}
+          {(screen === "feed" || screen === "shows") && (
+            <button
+              className="mp-press"
+              onClick={() => {
+                setChatOrigin(screen);
+                setScreen("chatlist");
+              }}
+              style={{ background: "rgba(255,255,255,0.6)", border: "none", borderRadius: 999, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}
+              aria-label="Messages"
+            >
+              <MessageCircle size={17} color={C.blue} />
+              {myThreadIds.length > 0 && (
+                <span style={{ position: "absolute", top: 2, right: 2, background: C.red, width: 8, height: 8, borderRadius: "50%", border: "1.5px solid white" }} />
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ---------------- SHOWS SCREEN ---------------- */}
+      {screen === "shows" && (
+        <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "16px 16px 90px", overflowY: "auto", flex: 1 }}>
+          {trending.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, paddingLeft: 2 }}>
+                <Flame size={13} color={C.red} />
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: C.inkSoft, textTransform: "uppercase", letterSpacing: "0.03em" }}>Trending Now</span>
+              </div>
+              <div className="mp-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
+                {trending.map((t) => (
+                  <button
+                    key={t.card}
+                    className="mp-press"
+                    onClick={() => {
+                      setActiveShowId(t.topShowId);
+                      setQuery(t.card);
+                      setScreen("feed");
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      background: "rgba(255,255,255,0.55)",
+                      backdropFilter: "blur(20px)",
+                      border: `1px solid ${C.hairline}`,
+                      borderRadius: 14,
+                      padding: "8px 12px",
+                      textAlign: "left",
+                      maxWidth: 160,
+                    }}
+                  >
+                    <div style={{ fontSize: 12.5, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.card}</div>
+                    <div style={{ fontSize: 10.5, color: C.red, fontWeight: 700, marginTop: 2 }}>{t.count} looking</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ad banner slot */}
+          {!auth.premium ? (
+            <Glass
+              radius={18}
+              style={{
+                height: 96,
+                marginBottom: 16,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                border: `1.5px dashed rgba(60,60,67,0.22)`,
+                background: "rgba(255,255,255,0.35)",
+                boxShadow: "none",
+              }}
+            >
+              <div style={{ textAlign: "center", color: C.inkFaint }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: "0.02em" }}>AD SPACE</div>
+                <div style={{ fontSize: 11, marginTop: 2 }}>320×100 banner reserved for sponsors</div>
+              </div>
+            </Glass>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, color: C.gold, fontSize: 12.5, fontWeight: 650 }}>
+              <Crown size={13} /> Premium — enjoying an ad-free board
+            </div>
+          )}
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, color: C.inkSoft, fontSize: 13, paddingLeft: 2 }}>
+            <MapPin size={14} />
+            {geoState === "ok" && <span>Sorted by distance from you</span>}
+            {geoState === "asking" && <span>Finding shows near you…</span>}
+            {geoState === "denied" && <span>Turn on location to sort by distance</span>}
+          </div>
+
+          {todayShows.length > 0 && (
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.inkSoft, textTransform: "uppercase", letterSpacing: "0.03em", margin: "4px 2px 8px" }}>
+              Happening Today
+            </div>
+          )}
+          {todayShows.map((s) => (
+            <div key={s.id} className="mp-press" style={{ marginBottom: 12 }}>
+              <Glass
+                radius={20}
+                onClick={() => {
+                  setActiveShowId(s.id);
+                  setScreen("feed");
+                }}
+                style={{ padding: "16px 18px", cursor: "pointer" }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ fontSize: 17, fontWeight: 650, letterSpacing: "-0.01em" }}>{s.name}</div>
+                      <span style={{ fontSize: 9.5, fontWeight: 700, color: "white", background: C.red, padding: "2px 6px", borderRadius: 6, letterSpacing: "0.02em" }}>TODAY</span>
+                    </div>
+                    <div style={{ fontSize: 13.5, color: C.inkSoft, marginTop: 3 }}>{s.venue}</div>
+                    <div style={{ fontSize: 12, color: C.blue, marginTop: 7, fontWeight: 600 }}>{s.whenLabel}</div>
+                    {s.id === "s1" && (
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 8, background: "rgba(175,82,222,0.12)", padding: "3px 8px", borderRadius: 999 }}>
+                        <BadgeCheck size={11} color={C.purple} />
+                        <span style={{ fontSize: 10.5, fontWeight: 650, color: C.purple }}>Official App Partner</span>
+                      </div>
+                    )}
+                  </div>
+                  {s.distance != null && (
+                    <div style={{ fontFamily: MONO, fontSize: 13, color: C.inkSoft, whiteSpace: "nowrap", paddingLeft: 10 }}>
+                      {s.distance.toFixed(1)} km
+                    </div>
+                  )}
+                </div>
+              </Glass>
+            </div>
+          ))}
+
+          {upcomingShows.length > 0 && (
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.inkSoft, textTransform: "uppercase", letterSpacing: "0.03em", margin: "16px 2px 8px" }}>
+              Coming Up
+            </div>
+          )}
+          {upcomingShows.map((s) => (
+            <div key={s.id} className="mp-press" style={{ marginBottom: 12 }}>
+              <Glass
+                radius={20}
+                onClick={() => {
+                  setActiveShowId(s.id);
+                  setScreen("feed");
+                }}
+                style={{ padding: "16px 18px", cursor: "pointer" }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontSize: 17, fontWeight: 650, letterSpacing: "-0.01em" }}>{s.name}</div>
+                    <div style={{ fontSize: 13.5, color: C.inkSoft, marginTop: 3 }}>{s.venue}</div>
+                    <div style={{ fontSize: 12, color: C.blue, marginTop: 7, fontWeight: 600 }}>{s.whenLabel}</div>
+                  </div>
+                  {s.distance != null && (
+                    <div style={{ fontFamily: MONO, fontSize: 13, color: C.inkSoft, whiteSpace: "nowrap", paddingLeft: 10 }}>
+                      {s.distance.toFixed(1)} km
+                    </div>
+                  )}
+                </div>
+              </Glass>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ---------------- FEED SCREEN ---------------- */}
+      {screen === "feed" && (
+        <>
+          <div style={{ position: "relative", zIndex: 1, padding: "14px 16px 0" }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Glass radius={14} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", boxShadow: "none", flex: 1, position: "relative" }}>
+                <Search size={15} color={C.inkSoft} />
+                <CardTypeahead
+                  value={query}
+                  onChange={setQuery}
+                  game={gameFilter === "all" ? "pokemon" : gameFilter}
+                  placeholder="Search for a Pokémon or One Piece card…"
+                  style={{ border: "none", background: "none", outline: "none", flex: 1, fontSize: 14.5, color: C.ink, width: "100%" }}
+                />
+              </Glass>
+              <input ref={scanInputRef} type="file" accept="image/*" capture="environment" onChange={handleScanFile} style={{ display: "none" }} />
+              <button
+                className="mp-press"
+                onClick={() => scanInputRef.current && scanInputRef.current.click()}
+                disabled={scanningCard}
+                title="Scan a card to search"
+                style={{ background: "rgba(255,255,255,0.6)", border: "none", borderRadius: 14, width: 42, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", flexShrink: 0 }}
+              >
+                <ScanLine size={17} color={scanningCard ? C.inkFaint : C.purple} className={scanningCard ? "mp-spin" : ""} />
+              </button>
+              <button
+                className="mp-press"
+                onClick={() => setShowFilters((v) => !v)}
+                title="Filters"
+                style={{ background: activeFilterCount > 0 ? "rgba(10,132,255,0.14)" : "rgba(255,255,255,0.6)", border: "none", borderRadius: 14, width: 42, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", flexShrink: 0, position: "relative" }}
+              >
+                <SlidersHorizontal size={17} color={activeFilterCount > 0 ? C.blue : C.inkSoft} />
+                {activeFilterCount > 0 && (
+                  <span style={{ position: "absolute", top: 3, right: 3, background: C.red, width: 7, height: 7, borderRadius: "50%" }} />
+                )}
+              </button>
+            </div>
+
+            {scanningCard && (
+              <div style={{ fontSize: 11.5, color: C.purple, marginTop: 6, paddingLeft: 4, fontWeight: 600 }}>Analyzing card photo…</div>
+            )}
+
+            {showFilters && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+                {[
+                  { label: "All games", active: gameFilter === "all", onClick: () => setGameFilter("all") },
+                  { label: "Pokémon", active: gameFilter === "pokemon", onClick: () => setGameFilter("pokemon") },
+                  { label: "One Piece", active: gameFilter === "onepiece", onClick: () => setGameFilter("onepiece") },
+                  { label: "🔥 Boosted", active: boostedOnly, onClick: () => setBoostedOnly((v) => !v) },
+                  { label: "✓ Dealers", active: dealersOnly, onClick: () => setDealersOnly((v) => !v) },
+                ].map((f) => (
+                  <button
+                    key={f.label}
+                    className="mp-press"
+                    onClick={f.onClick}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 999,
+                      border: f.active ? `1.5px solid ${C.blue}` : `1px solid ${C.hairline}`,
+                      background: f.active ? "rgba(10,132,255,0.12)" : "rgba(255,255,255,0.5)",
+                      color: f.active ? C.blue : C.inkSoft,
+                      fontSize: 12,
+                      fontWeight: 650,
+                    }}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+                <button
+                  className="mp-press"
+                  onClick={() => setSearchAllShows((v) => !v)}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    border: searchAllShows ? `1.5px solid ${C.purple}` : `1px solid ${C.hairline}`,
+                    background: searchAllShows ? "rgba(175,82,222,0.12)" : "rgba(255,255,255,0.5)",
+                    color: searchAllShows ? C.purple : C.inkSoft,
+                    fontSize: 12,
+                    fontWeight: 650,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <Globe size={11} /> Search all shows
+                </button>
+              </div>
+            )}
+
+            {!auth.premium && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, padding: "0 4px" }}>
+                <span style={{ fontSize: 11.5, color: C.inkSoft }}>
+                  {Math.max(0, FREE_SHOUT_LIMIT - myWants.length)} free shoutout{Math.max(0, FREE_SHOUT_LIMIT - myWants.length) === 1 ? "" : "s"} left this month
+                </span>
+                <button className="mp-press" onClick={() => setShowPaywall(true)} style={{ background: "none", border: "none", color: C.gold, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 3, padding: 0 }}>
+                  <Crown size={12} /> Go Premium
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "14px 16px 130px", overflowY: "auto", flex: 1 }}>
+            {auth.dealer && demandInsights.length > 0 && (
+              <Glass radius={18} style={{ padding: "14px 16px", marginBottom: 12, border: `1px solid rgba(175,82,222,0.3)` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <TrendingUp size={14} color={C.purple} />
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: C.purple }}>DEMAND AT THIS SHOW · DEALER INSIGHTS</div>
+                </div>
+                {demandInsights.map(([cardName, count]) => (
+                  <div key={cardName} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+                    <span style={{ color: C.ink }}>{cardName}</span>
+                    <span style={{ color: C.inkSoft, fontFamily: MONO }}>{count} looking</span>
+                  </div>
+                ))}
+              </Glass>
+            )}
+
+            {!auth.premium && (
+              <Glass
+                radius={18}
+                style={{
+                  padding: "14px 16px",
+                  marginBottom: 12,
+                  borderLeft: `4px solid ${C.gold}`,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <Sparkles size={12} color={C.gold} />
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: C.gold, letterSpacing: "0.03em" }}>SPONSORED · CARD OF THE WEEK</div>
+                </div>
+                <div style={{ fontSize: 14.5, fontWeight: 650 }}>Get your pulls graded with PSA</div>
+                <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 3 }}>Sponsored by PSA Grading — new submitters save 20% this month.</div>
+                <a href="https://www.psacard.com" target="_blank" rel="noreferrer" style={{ fontSize: 12.5, color: C.blue, fontWeight: 650, marginTop: 6, display: "inline-flex", alignItems: "center", gap: 3, textDecoration: "none" }}>
+                  Learn more <ExternalLink size={11} />
+                </a>
+              </Glass>
+            )}
+
+            {searchAllShows && query ? (
+              <>
+                <div style={{ fontSize: 11.5, color: C.purple, fontWeight: 650, marginBottom: 10, display: "flex", alignItems: "center", gap: 4 }}>
+                  <Globe size={12} /> Searching across every show
+                </div>
+                {crossShowResults.length === 0 && (
+                  <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 40, fontSize: 14 }}>
+                    No matches anywhere right now.
+                  </div>
+                )}
+                {crossShowResults.map((w) => (
+                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} showName={w.showName} />
+                ))}
+              </>
+            ) : (
+              <>
+                {feedWants.length === 0 && (
+                  <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 40, fontSize: 14 }}>
+                    Nobody's called out a Pokémon or One Piece card here yet.
+                    <br />
+                    Be the first to shout one out.
+                  </div>
+                )}
+                {feedWants.map((w) => (
+                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} />
+                ))}
+              </>
+            )}
+          </div>
+
+          <button
+            className="mp-press"
+            onClick={() => {
+              if (!auth.premium && myWants.length >= FREE_SHOUT_LIMIT) {
+                setShowPaywall(true);
+              } else {
+                setShowPostForm(true);
+              }
+            }}
+            style={{
+              position: "absolute",
+              zIndex: 3,
+              right: 20,
+              bottom: "calc(86px + env(safe-area-inset-bottom))",
+              background: "linear-gradient(135deg, #FF453A, #FF9500)",
+              color: "white",
+              border: "1px solid rgba(255,255,255,0.4)",
+              borderRadius: 999,
+              padding: "14px 20px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontWeight: 650,
+              fontSize: 14.5,
+              boxShadow: "0 8px 22px rgba(255,69,58,0.4)",
+            }}
+          >
+            <Megaphone size={17} /> Shout out a card
+          </button>
+        </>
+      )}
+
+      {/* ---------------- CHAT LIST ---------------- */}
+      {screen === "chatlist" && (
+        <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "16px 16px 90px", overflowY: "auto", flex: 1 }}>
+          {myThreadIds.length === 0 && (
+            <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 40, fontSize: 14 }}>
+              No conversations yet. Tap "I've got one" on a want to start one.
+            </div>
+          )}
+          {myThreadIds.map((uid) => {
+            const msgs = threads[uid];
+            const last = msgs[msgs.length - 1];
+            return (
+              <div key={uid} className="mp-press" style={{ marginBottom: 10 }}>
+                <Glass radius={18} onClick={() => openChat(uid, chatOrigin)} style={{ padding: "14px 16px", cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <div style={{ fontWeight: 650, fontSize: 15 }}>{personName(uid)}</div>
+                    <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(last.ts)}</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {last.from === "me" ? "You: " : ""}
+                    {last.text}
+                  </div>
+                </Glass>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ---------------- CHAT THREAD ---------------- */}
+      {screen === "chat" && activeThread && <ChatThread otherId={activeThread} messages={threads[activeThread] || []} onSend={sendMessage} />}
+
+      {/* ---------------- ACCOUNT SCREEN ---------------- */}
+      {screen === "account" && (
+        <AccountScreen
+          auth={auth}
+          onLogin={(name, email) => setAuth((prev) => ({ ...prev, loggedIn: true, name, email }))}
+          onLogout={() => setAuth({ loggedIn: false, name: "", email: "", premium: false, dealer: false })}
+          onTogglePremium={() => setAuth((prev) => ({ ...prev, premium: !prev.premium }))}
+          onToggleDealer={() => setAuth((prev) => ({ ...prev, dealer: !prev.dealer }))}
+          onOpenPremiumPerks={() => setPlanPerks("premium")}
+          onOpenDealerPerks={() => setPlanPerks("dealer")}
+          myWants={myWants}
+          myThreadIds={myThreadIds}
+          threads={threads}
+          onOpenChat={(uid) => openChat(uid, "account")}
+          onMarkFound={markFound}
+          canUseAlerts={canUseAlerts}
+          keywordAlerts={keywordAlerts}
+          onAddKeyword={addKeyword}
+          onRemoveKeyword={removeKeyword}
+        />
+      )}
+
+      {/* ---------------- CARD ALERTS SCREEN ---------------- */}
+      {screen === "alerts" && (
+        <AlertsScreen
+          canUseAlerts={canUseAlerts}
+          keywordAlerts={keywordAlerts}
+          onAddKeyword={addKeyword}
+          onRemoveKeyword={removeKeyword}
+          alertMatches={alertMatches}
+          onOpenChat={(uid) => openChat(uid, alertsOrigin)}
+        />
+      )}
+
+      {/* ---------------- BOTTOM TAB BAR ---------------- */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 4,
+          flexShrink: 0,
+          display: "flex",
+          background: "rgba(255,255,255,0.45)",
+          backdropFilter: "blur(28px) saturate(180%)",
+          WebkitBackdropFilter: "blur(28px) saturate(180%)",
+          borderTop: `1px solid ${C.hairline}`,
+          padding: "8px 0 calc(10px + env(safe-area-inset-bottom))",
+          transform: "translateZ(0)",
+          WebkitTransform: "translateZ(0)",
+        }}
+      >
+        <button
+          className="mp-press"
+          onClick={() => setScreen("shows")}
+          style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "6px 0" }}
+        >
+          <Megaphone size={20} color={!isAccountTab ? C.blue : C.inkFaint} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: !isAccountTab ? C.blue : C.inkFaint }}>Discover</span>
+        </button>
+        <button
+          className="mp-press"
+          onClick={() => setScreen("account")}
+          style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "6px 0" }}
+        >
+          <User size={20} color={isAccountTab ? C.blue : C.inkFaint} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: isAccountTab ? C.blue : C.inkFaint }}>Account</span>
+        </button>
+      </div>
+
+      {/* ---------------- POST FORM MODAL ---------------- */}
+      {showPostForm && <PostForm onClose={() => setShowPostForm(false)} onSubmit={addWant} />}
+
+      {/* ---------------- PAYWALL MODAL ---------------- */}
+      {showPaywall && (
+        <Paywall
+          onClose={() => setShowPaywall(false)}
+          onUpgrade={() => {
+            setAuth((prev) => ({ ...prev, premium: true }));
+            setShowPaywall(false);
+            setShowPostForm(true);
+          }}
+        />
+      )}
+
+      {/* ---------------- PLAN PERKS MODAL ---------------- */}
+      {planPerks && (
+        <PlanPerks
+          kind={planPerks}
+          onClose={() => setPlanPerks(null)}
+          onProceed={() => {
+            setAuth((prev) => ({ ...prev, [planPerks]: true }));
+            setPlanPerks(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChatThread({ otherId, messages, onSend }) {
+  const [text, setText] = useState("");
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  return (
+    <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{ padding: "10px 18px", fontWeight: 650, fontSize: 15 }}>{personName(otherId)}</div>
+      <div className="mp-scroll" style={{ flex: 1, overflowY: "auto", padding: "6px 16px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+        {messages.length === 0 && (
+          <div style={{ textAlign: "center", color: C.inkSoft, fontSize: 13.5, marginTop: 30 }}>
+            Say hi — mention the card you're chatting about.
+          </div>
+        )}
+        {messages.map((m, i) => (
+          <div
+            key={i}
+            style={{
+              alignSelf: m.from === "me" ? "flex-end" : "flex-start",
+              background: m.from === "me" ? C.blue : "rgba(255,255,255,0.7)",
+              backdropFilter: m.from === "me" ? "none" : "blur(10px)",
+              color: m.from === "me" ? "white" : C.ink,
+              border: m.from === "me" ? "none" : `1px solid ${C.hairline}`,
+              borderRadius: 18,
+              padding: "9px 14px",
+              maxWidth: "78%",
+              fontSize: 14.5,
+              lineHeight: 1.35,
+              boxShadow: m.from === "me" ? "0 3px 10px rgba(10,132,255,0.3)" : "0 2px 6px rgba(0,0,0,0.04)",
+            }}
+          >
+            {m.text}
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+      <div style={{ display: "flex", gap: 8, padding: 14 }}>
+        <Glass radius={22} style={{ flex: 1, boxShadow: "none" }}>
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onSend(text);
+                setText("");
+              }
+            }}
+            placeholder="Message…"
+            style={{ width: "100%", border: "none", background: "none", borderRadius: 22, padding: "11px 16px", fontSize: 14.5, outline: "none" }}
+          />
+        </Glass>
+        <button
+          className="mp-press"
+          onClick={() => {
+            onSend(text);
+            setText("");
+          }}
+          style={{ background: C.blue, color: "white", border: "none", borderRadius: 999, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(10,132,255,0.4)" }}
+          aria-label="Send"
+        >
+          <Send size={17} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AccountScreen({ auth, onLogin, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword }) {
+  const [view, setView] = useState("shoutouts");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+
+  const fieldStyle = {
+    width: "100%",
+    marginTop: 6,
+    marginBottom: 14,
+    border: `1px solid ${C.hairline}`,
+    background: "rgba(255,255,255,0.6)",
+    borderRadius: 12,
+    padding: "11px 14px",
+    fontSize: 14.5,
+    outline: "none",
+    boxSizing: "border-box",
+    fontFamily: FONT,
+  };
+
+  if (!auth.loggedIn) {
+    return (
+      <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "20px 16px 90px", overflowY: "auto", flex: 1 }}>
+        <Glass radius={22} style={{ padding: "22px 20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <Sparkles size={16} color={C.blue} />
+            <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>Sign in to Megaphone</div>
+          </div>
+          <div style={{ fontSize: 13.5, color: C.inkSoft, marginBottom: 16, lineHeight: 1.4 }}>
+            Track your own shoutouts and pick up chats right where you left off.
+          </div>
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Name</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ash K." style={fieldStyle} />
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Email</label>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" style={fieldStyle} />
+
+          <button
+            className="mp-press"
+            disabled={!name.trim() || !email.trim()}
+            onClick={() => onLogin(name.trim(), email.trim())}
+            style={{
+              width: "100%",
+              background: name.trim() && email.trim() ? C.blue : "rgba(120,120,128,0.25)",
+              color: "white",
+              border: "none",
+              borderRadius: 14,
+              padding: "13px",
+              fontWeight: 650,
+              fontSize: 15,
+              boxShadow: name.trim() && email.trim() ? "0 6px 16px rgba(10,132,255,0.35)" : "none",
+            }}
+          >
+            Log In
+          </button>
+          <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 10, textAlign: "center" }}>
+            Demo login — no password needed, just tap in.
+          </div>
+        </Glass>
+      </div>
+    );
+  }
+
+  const initials = auth.name
+    .split(" ")
+    .map((p) => p[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "16px 16px 90px", overflowY: "auto", flex: 1 }}>
+      <Glass radius={22} style={{ padding: "18px 18px", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div
+            style={{
+              width: 48,
+              height: 48,
+              borderRadius: "50%",
+              background: "linear-gradient(135deg, #FF453A, #FF9500)",
+              color: "white",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 700,
+              fontSize: 17,
+              flexShrink: 0,
+            }}
+          >
+            {initials || "?"}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 16.5, fontWeight: 650 }}>{auth.name}</div>
+            <div style={{ fontSize: 12.5, color: C.inkSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{auth.email}</div>
+          </div>
+          <button
+            className="mp-press"
+            onClick={onLogout}
+            style={{ background: "rgba(120,120,128,0.16)", border: "none", borderRadius: 999, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+            aria-label="Log out"
+          >
+            <LogOut size={15} color={C.inkSoft} />
+          </button>
+        </div>
+      </Glass>
+
+      {/* premium subscription */}
+      <Glass
+        radius={18}
+        onClick={!auth.premium ? onOpenPremiumPerks : undefined}
+        style={{
+          padding: "14px 16px",
+          marginBottom: 10,
+          border: auth.premium ? `1px solid ${C.gold}` : undefined,
+          cursor: !auth.premium ? "pointer" : undefined,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: "rgba(201,138,11,0.14)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Crown size={17} color={C.gold} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14.5, fontWeight: 650 }}>{auth.premium ? "Premium — active" : "Megaphone Premium"}</div>
+            <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 1 }}>
+              {auth.premium ? "Unlimited shoutouts, no ads." : "Unlimited shoutouts + no ads — $4.99/mo"}
+            </div>
+          </div>
+          <button
+            className="mp-press"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (auth.premium) onTogglePremium();
+              else onOpenPremiumPerks();
+            }}
+            style={{
+              background: auth.premium ? "rgba(120,120,128,0.16)" : "linear-gradient(135deg, #C98A0B, #FFD60A)",
+              color: auth.premium ? C.inkSoft : "#3A2900",
+              border: "none",
+              borderRadius: 999,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 700,
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {auth.premium ? "Cancel" : "Upgrade"}
+          </button>
+        </div>
+      </Glass>
+
+      {/* verified dealer subscription */}
+      <Glass
+        radius={18}
+        onClick={!auth.dealer ? onOpenDealerPerks : undefined}
+        style={{
+          padding: "14px 16px",
+          marginBottom: 16,
+          border: auth.dealer ? `1px solid ${C.purple}` : undefined,
+          cursor: !auth.dealer ? "pointer" : undefined,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: "rgba(175,82,222,0.14)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <BadgeCheck size={17} color={C.purple} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14.5, fontWeight: 650 }}>{auth.dealer ? "Verified Dealer — active" : "Become a Verified Dealer"}</div>
+            <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 1 }}>
+              {auth.dealer ? "Badge live, demand insights unlocked." : "Verified badge + demand insights — $9.99/mo"}
+            </div>
+          </div>
+          <button
+            className="mp-press"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (auth.dealer) onToggleDealer();
+              else onOpenDealerPerks();
+            }}
+            style={{
+              background: auth.dealer ? "rgba(120,120,128,0.16)" : C.purple,
+              color: auth.dealer ? C.inkSoft : "white",
+              border: "none",
+              borderRadius: 999,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 700,
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {auth.dealer ? "Cancel" : "Upgrade"}
+          </button>
+        </div>
+      </Glass>
+
+      {/* keyword alerts */}
+      <Glass radius={18} style={{ padding: "14px 16px", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: "rgba(10,132,255,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Bell size={17} color={C.blue} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14.5, fontWeight: 650 }}>Keyword Alerts</div>
+            <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 1 }}>
+              {canUseAlerts ? "Get notified when a shoutout matches these terms." : "Premium & Verified Dealer feature"}
+            </div>
+          </div>
+        </div>
+
+        {canUseAlerts ? (
+          <KeywordAlertsEditor keywordAlerts={keywordAlerts} onAdd={onAddKeyword} onRemove={onRemoveKeyword} />
+        ) : (
+          <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 8, lineHeight: 1.4 }}>
+            Upgrade to Premium or Verified Dealer above to watch for cards — e.g. sellers holding an OP-05 Manga Luffy can turn on an alert for "Luffy" and get pinged the moment someone shouts it out at any show.
+          </div>
+        )}
+      </Glass>
+
+      <Glass radius={14} style={{ display: "flex", padding: 4, marginBottom: 14, boxShadow: "none" }}>
+        {["shoutouts", "chats"].map((v) => (
+          <button
+            key={v}
+            className="mp-press"
+            onClick={() => setView(v)}
+            style={{
+              flex: 1,
+              background: view === v ? "rgba(255,255,255,0.9)" : "none",
+              border: "none",
+              borderRadius: 11,
+              padding: "9px 0",
+              fontSize: 13.5,
+              fontWeight: 650,
+              color: view === v ? C.ink : C.inkSoft,
+              boxShadow: view === v ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+            }}
+          >
+            {v === "shoutouts" ? "My Shoutouts" : "Chats"}
+          </button>
+        ))}
+      </Glass>
+
+      {view === "shoutouts" && (
+        <>
+          {myWants.length === 0 && (
+            <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 30, fontSize: 14 }}>
+              You haven't shouted out any cards yet.
+            </div>
+          )}
+          {myWants.map((w) => (
+            <div key={w.id} style={{ marginBottom: 12 }}>
+              <Glass radius={18} style={{ padding: "14px 16px" }}>
+                {w.boosted && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8, color: C.gold, fontSize: 10.5, fontWeight: 700 }}>
+                    <Pin size={11} /> BOOSTED
+                  </div>
+                )}
+                <div style={{ fontSize: 15.5, fontWeight: 650, letterSpacing: "-0.01em" }}>{w.card}</div>
+                {w.detail && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4 }}>{w.detail}</div>}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                  <div style={{ fontSize: 12.5, color: C.blue, fontWeight: 600 }}>{w.showName}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {w.maxPrice && (
+                      <div style={{ fontFamily: MONO, fontSize: 12, color: C.gold, fontWeight: 700 }}>up to {w.maxPrice}</div>
+                    )}
+                    <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(w.ts)}</div>
+                  </div>
+                </div>
+                {w.found ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.hairline}`, color: C.green, fontSize: 12.5, fontWeight: 650 }}>
+                    <PartyPopper size={13} /> Found — nice pickup!
+                  </div>
+                ) : (
+                  <button
+                    className="mp-press"
+                    onClick={() => onMarkFound(w.id)}
+                    style={{ marginTop: 10, paddingTop: 10, width: "100%", background: "none", border: "none", borderTop: `1px solid ${C.hairline}`, color: C.green, fontSize: 12.5, fontWeight: 650, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
+                  >
+                    <Check size={13} /> Mark as found
+                  </button>
+                )}
+              </Glass>
+            </div>
+          ))}
+        </>
+      )}
+
+      {view === "chats" && (
+        <>
+          {myThreadIds.length === 0 && (
+            <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 30, fontSize: 14 }}>
+              No conversations yet.
+            </div>
+          )}
+          {myThreadIds.map((uid) => {
+            const msgs = threads[uid];
+            const last = msgs[msgs.length - 1];
+            return (
+              <div key={uid} className="mp-press" style={{ marginBottom: 10 }}>
+                <Glass radius={18} onClick={() => onOpenChat(uid)} style={{ padding: "14px 16px", cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <div style={{ fontWeight: 650, fontSize: 15 }}>{personName(uid)}</div>
+                    <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(last.ts)}</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {last.from === "me" ? "You: " : ""}
+                    {last.text}
+                  </div>
+                </Glass>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+function KeywordAlertsEditor({ keywordAlerts, onAdd, onRemove }) {
+  const [input, setInput] = useState("");
+  return (
+    <div style={{ marginTop: 10 }}>
+      {keywordAlerts.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {keywordAlerts.map((kw) => (
+            <div
+              key={kw}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                background: "rgba(10,132,255,0.12)",
+                color: C.blue,
+                padding: "5px 10px",
+                borderRadius: 999,
+                fontSize: 12.5,
+                fontWeight: 650,
+              }}
+            >
+              {kw}
+              <button className="mp-press" onClick={() => onRemove(kw)} style={{ background: "none", border: "none", padding: 0, display: "flex", color: C.blue }} aria-label={`Remove ${kw}`}>
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              onAdd(input);
+              setInput("");
+            }
+          }}
+          placeholder="e.g. Luffy, Charizard, Umbreon…"
+          style={{ flex: 1, border: `1px solid ${C.hairline}`, background: "rgba(255,255,255,0.6)", borderRadius: 10, padding: "9px 12px", fontSize: 13.5, outline: "none", fontFamily: FONT }}
+        />
+        <button
+          className="mp-press"
+          onClick={() => {
+            onAdd(input);
+            setInput("");
+          }}
+          disabled={!input.trim()}
+          style={{ background: input.trim() ? C.blue : "rgba(120,120,128,0.25)", color: "white", border: "none", borderRadius: 10, width: 38, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+          aria-label="Add keyword"
+        >
+          <Plus size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AlertsScreen({ canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword, alertMatches, onOpenChat }) {
+  if (!canUseAlerts) {
+    return (
+      <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "20px 16px 90px", overflowY: "auto", flex: 1 }}>
+        <Glass radius={22} style={{ padding: "22px 20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <Bell size={16} color={C.blue} />
+            <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>Card Alerts</div>
+          </div>
+          <div style={{ fontSize: 13.5, color: C.inkSoft, lineHeight: 1.4 }}>
+            Keyword alerts are a Premium and Verified Dealer feature — go to Account to upgrade, then watch for terms like "Luffy" or "Charizard" and get pinged the instant someone shouts one out at any show.
+          </div>
+        </Glass>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "16px 16px 90px", overflowY: "auto", flex: 1 }}>
+      <Glass radius={18} style={{ padding: "14px 16px", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 2 }}>Watching for</div>
+        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>Matches search both the card name and details, across every show.</div>
+        <KeywordAlertsEditor keywordAlerts={keywordAlerts} onAdd={onAddKeyword} onRemove={onRemoveKeyword} />
+      </Glass>
+
+      {keywordAlerts.length === 0 ? (
+        <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 20, fontSize: 14 }}>
+          Add a keyword above to start getting alerts.
+        </div>
+      ) : alertMatches.length === 0 ? (
+        <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 20, fontSize: 14 }}>
+          No matches yet — we'll notify you the moment someone shouts one of these out.
+        </div>
+      ) : (
+        alertMatches.map((m) => (
+          <div key={m.id} style={{ marginBottom: 12 }}>
+            <Glass radius={18} style={{ padding: "14px 16px", border: `1px solid rgba(10,132,255,0.25)` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+                <Bell size={11} color={C.blue} />
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: C.blue, letterSpacing: "0.02em" }}>MATCHED "{m.matchedKeyword.toUpperCase()}"</span>
+              </div>
+              <div style={{ fontSize: 15.5, fontWeight: 650, letterSpacing: "-0.01em" }}>{m.card}</div>
+              {m.detail && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4 }}>{m.detail}</div>}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{personName(m.userId)} · {m.showName}</div>
+                  <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(m.ts)}</div>
+                </div>
+                <button
+                  className="mp-press"
+                  onClick={() => onOpenChat(m.userId)}
+                  style={{ background: C.blue, color: "white", border: "none", borderRadius: 999, padding: "8px 14px", fontSize: 12.5, fontWeight: 650, display: "flex", alignItems: "center", gap: 5 }}
+                >
+                  <MessageCircle size={13} /> Message
+                </button>
+              </div>
+            </Glass>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function PostForm({ onClose, onSubmit }) {
+  const [card, setCard] = useState("");
+  const [game, setGame] = useState("pokemon");
+  const [detail, setDetail] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [boost, setBoost] = useState(false);
+  const [error, setError] = useState("");
+
+  function handleSubmit() {
+    const combined = `${card} ${detail}`;
+    if (violatesContentPolicy(combined)) {
+      setError("This doesn't look like an on-topic card shoutout. Please keep posts focused on Pokémon or One Piece cards.");
+      return;
+    }
+    setError("");
+    onSubmit({ card: card.trim(), game, detail: detail.trim(), maxPrice: maxPrice.trim(), boosted: boost });
+  }
+
+  const fieldStyle = {
+    width: "100%",
+    marginTop: 6,
+    marginBottom: 14,
+    border: `1px solid ${C.hairline}`,
+    background: "rgba(255,255,255,0.6)",
+    borderRadius: 12,
+    padding: "11px 14px",
+    fontSize: 14.5,
+    outline: "none",
+    boxSizing: "border-box",
+    fontFamily: FONT,
+  };
+
+  return (
+    <div
+      style={{ position: "absolute", inset: 0, background: "rgba(28,28,30,0.35)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", zIndex: 10, borderRadius: 28 }}
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%" }}>
+        <Glass
+          strong
+          radius={0}
+          style={{
+            borderTopLeftRadius: 26,
+            borderTopRightRadius: 26,
+            borderBottom: "none",
+            borderLeft: "none",
+            borderRight: "none",
+            padding: "10px 20px calc(24px + env(safe-area-inset-bottom))",
+            maxHeight: "82dvh",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(60,60,67,0.25)", margin: "0 auto 16px" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.01em" }}>Shout it out</div>
+            <button className="mp-press" onClick={onClose} style={{ background: "rgba(120,120,128,0.16)", border: "none", borderRadius: 999, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <X size={15} color={C.inkSoft} />
+            </button>
+          </div>
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Which game?</label>
+          <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
+            {[
+              { id: "pokemon", label: "Pokémon" },
+              { id: "onepiece", label: "One Piece" },
+            ].map((g) => (
+              <button
+                key={g.id}
+                className="mp-press"
+                onClick={() => {
+                  setGame(g.id);
+                  setCard("");
+                }}
+                style={{
+                  flex: 1,
+                  padding: "10px 0",
+                  borderRadius: 10,
+                  border: game === g.id ? `1.5px solid ${C.blue}` : `1px solid ${C.hairline}`,
+                  background: game === g.id ? "rgba(10,132,255,0.1)" : "rgba(255,255,255,0.5)",
+                  color: game === g.id ? C.blue : C.inkSoft,
+                  fontSize: 13.5,
+                  fontWeight: 650,
+                }}
+              >
+                {g.label}
+              </button>
+            ))}
+          </div>
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Card you're looking for</label>
+          <CardTypeahead
+            value={card}
+            onChange={setCard}
+            game={game}
+            placeholder={game === "onepiece" ? "e.g. Luffy Gear 5 Alt Art" : "e.g. Charizard VMAX Rainbow Rare"}
+            style={fieldStyle}
+          />
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Details (condition, grade, notes)</label>
+          <textarea value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="Any grade, prefer PSA 9+, will trade too…" rows={2} style={{ ...fieldStyle, resize: "none" }} />
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Budget (optional)</label>
+          <input value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="up to $500" style={fieldStyle} />
+
+          <button
+            className="mp-press"
+            onClick={() => setBoost((b) => !b)}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              marginBottom: 16,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: boost ? `1.5px solid ${C.gold}` : `1px solid ${C.hairline}`,
+              background: boost ? "rgba(201,138,11,0.1)" : "rgba(255,255,255,0.5)",
+              textAlign: "left",
+            }}
+          >
+            <Pin size={16} color={C.gold} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 650 }}>Boost to top of board</div>
+              <div style={{ fontSize: 11.5, color: C.inkSoft }}>Pin your shoutout above the rest for a few hours — $1.99</div>
+            </div>
+            <div
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: 999,
+                border: `2px solid ${boost ? C.gold : C.hairline}`,
+                background: boost ? C.gold : "transparent",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              {boost && <Check size={13} color="white" />}
+            </div>
+          </button>
+
+          {error && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: 12, padding: "10px 12px", background: "rgba(255,59,48,0.1)", borderRadius: 10, color: C.red, fontSize: 12.5, fontWeight: 600 }}>
+              <Flag size={13} style={{ marginTop: 1, flexShrink: 0 }} /> {error}
+            </div>
+          )}
+
+          <button
+            className="mp-press"
+            disabled={!card.trim()}
+            onClick={handleSubmit}
+            style={{
+              width: "100%",
+              background: card.trim() ? "linear-gradient(135deg, #FF453A, #FF9500)" : "rgba(120,120,128,0.25)",
+              color: "white",
+              border: "none",
+              borderRadius: 14,
+              padding: "14px",
+              fontWeight: 650,
+              fontSize: 15.5,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              boxShadow: card.trim() ? "0 6px 18px rgba(255,69,58,0.35)" : "none",
+            }}
+          >
+            <Check size={17} /> {boost ? "Post & Boost ($1.99)" : "Post to the board"}
+          </button>
+        </Glass>
+      </div>
+    </div>
+  );
+}
+
+function Paywall({ onClose, onUpgrade }) {
+  return (
+    <div
+      style={{ position: "absolute", inset: 0, background: "rgba(28,28,30,0.35)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", zIndex: 10, borderRadius: 28 }}
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%" }}>
+        <Glass
+          strong
+          radius={0}
+          style={{
+            borderTopLeftRadius: 26,
+            borderTopRightRadius: 26,
+            borderBottom: "none",
+            borderLeft: "none",
+            borderRight: "none",
+            padding: "10px 20px calc(28px + env(safe-area-inset-bottom))",
+          }}
+        >
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(60,60,67,0.25)", margin: "0 auto 16px" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Crown size={20} color={C.gold} />
+              <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.01em" }}>You're out of free shoutouts</div>
+            </div>
+            <button className="mp-press" onClick={onClose} style={{ background: "rgba(120,120,128,0.16)", border: "none", borderRadius: 999, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <X size={15} color={C.inkSoft} />
+            </button>
+          </div>
+          <div style={{ fontSize: 13.5, color: C.inkSoft, marginBottom: 16, lineHeight: 1.4 }}>
+            Free accounts get {FREE_SHOUT_LIMIT} shoutouts a month. Go Premium for unlimited shoutouts and an ad-free board.
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+            {["Unlimited shoutouts, every show", "No ads, ever", "Priority match alerts"].map((b) => (
+              <div key={b} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+                <Check size={14} color={C.green} /> {b}
+              </div>
+            ))}
+          </div>
+
+          <button
+            className="mp-press"
+            onClick={onUpgrade}
+            style={{
+              width: "100%",
+              background: "linear-gradient(135deg, #C98A0B, #FFD60A)",
+              color: "#3A2900",
+              border: "none",
+              borderRadius: 14,
+              padding: "14px",
+              fontWeight: 700,
+              fontSize: 15.5,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              boxShadow: "0 6px 18px rgba(201,138,11,0.35)",
+              marginBottom: 8,
+            }}
+          >
+            <Crown size={17} /> Upgrade — $4.99/mo
+          </button>
+          <button className="mp-press" onClick={onClose} style={{ width: "100%", background: "none", border: "none", color: C.inkSoft, fontSize: 13, fontWeight: 600, padding: "6px 0" }}>
+            Not now
+          </button>
+        </Glass>
+      </div>
+    </div>
+  );
+}
+
+// perks/confirmation screen shown before subscribing to Premium or Verified
+// Dealer — surfaces what the plan unlocks before the user commits to it
+const PLAN_INFO = {
+  premium: {
+    Icon: Crown,
+    color: C.gold,
+    tint: "rgba(201,138,11,0.14)",
+    title: "Megaphone Premium",
+    subtitle: "Unlimited shoutouts and an ad-free board.",
+    price: "$4.99/mo",
+    gradient: "linear-gradient(135deg, #C98A0B, #FFD60A)",
+    buttonTextColor: "#3A2900",
+    perks: [
+      "Unlimited shoutouts, every show",
+      "No ads, ever",
+      "Priority match alerts",
+      "Keyword alerts across every show",
+    ],
+  },
+  dealer: {
+    Icon: BadgeCheck,
+    color: C.purple,
+    tint: "rgba(175,82,222,0.14)",
+    title: "Verified Dealer",
+    subtitle: "Stand out as a trusted seller at every show.",
+    price: "$9.99/mo",
+    gradient: `linear-gradient(135deg, ${C.purple}, #D48CF0)`,
+    buttonTextColor: "white",
+    perks: [
+      "Verified checkmark badge next to your name",
+      "Demand insights — see what collectors want at each show",
+      "Keyword alerts across every show",
+      "Extra trust and visibility with buyers",
+    ],
+  },
+};
+
+function PlanPerks({ kind, onClose, onProceed }) {
+  const info = PLAN_INFO[kind];
+  const { Icon } = info;
+  return (
+    <div
+      style={{ position: "absolute", inset: 0, background: "rgba(28,28,30,0.35)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", zIndex: 10, borderRadius: 28 }}
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%" }}>
+        <Glass
+          strong
+          radius={0}
+          style={{
+            borderTopLeftRadius: 26,
+            borderTopRightRadius: 26,
+            borderBottom: "none",
+            borderLeft: "none",
+            borderRight: "none",
+            padding: "10px 20px calc(28px + env(safe-area-inset-bottom))",
+          }}
+        >
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(60,60,67,0.25)", margin: "0 auto 16px" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 12, background: info.tint, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <Icon size={20} color={info.color} />
+              </div>
+              <div>
+                <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.01em" }}>{info.title}</div>
+                <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 1 }}>{info.subtitle}</div>
+              </div>
+            </div>
+            <button className="mp-press" onClick={onClose} style={{ background: "rgba(120,120,128,0.16)", border: "none", borderRadius: 999, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <X size={15} color={C.inkSoft} />
+            </button>
+          </div>
+
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.inkSoft, textTransform: "uppercase", letterSpacing: "0.03em", margin: "18px 0 10px" }}>
+            What you'll get
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+            {info.perks.map((p) => (
+              <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+                <Check size={14} color={C.green} /> {p}
+              </div>
+            ))}
+          </div>
+
+          <button
+            className="mp-press"
+            onClick={onProceed}
+            style={{
+              width: "100%",
+              background: info.gradient,
+              color: info.buttonTextColor,
+              border: "none",
+              borderRadius: 14,
+              padding: "14px",
+              fontWeight: 700,
+              fontSize: 15.5,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              boxShadow: `0 6px 18px ${kind === "premium" ? "rgba(201,138,11,0.35)" : "rgba(175,82,222,0.35)"}`,
+              marginBottom: 8,
+            }}
+          >
+            <Icon size={17} /> Proceed — {info.price}
+          </button>
+          <button className="mp-press" onClick={onClose} style={{ width: "100%", background: "none", border: "none", color: C.inkSoft, fontSize: 13, fontWeight: 600, padding: "6px 0" }}>
+            Not now
+          </button>
+        </Glass>
+      </div>
+    </div>
+  );
+}
