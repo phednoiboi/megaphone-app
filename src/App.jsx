@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { MapPin, Search, MessageCircle, X, Send, ArrowLeft, Megaphone, Check, Sparkles, User, LogOut, Pin, BadgeCheck, Crown, ExternalLink, TrendingUp, PartyPopper, Flag, Bell, Plus, SlidersHorizontal, Globe, ScanLine, Flame } from "lucide-react";
+import { supabase } from "./supabaseClient";
 
 // ---------- design tokens (liquid glass) ----------
 const C = {
@@ -139,7 +140,7 @@ function WantCard({ w, auth, onReport, onChat, showName }) {
           ) : (
             <div />
           )}
-          {w.userId !== "me" && (
+          {w.userId !== auth?.id && (
             <button
               className="mp-press"
               onClick={() => onReport(w.id)}
@@ -163,8 +164,8 @@ function WantCard({ w, auth, onReport, onChat, showName }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{personName(w.userId)}</span>
-              {isDealer(w.userId, auth) && <BadgeCheck size={13} color={C.blue} />}
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{w.userId === auth?.id ? "You" : w.posterName || "A collector"}</span>
+              {(w.userId === auth?.id ? auth?.dealer : w.posterDealer) && <BadgeCheck size={13} color={C.blue} />}
             </div>
             <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>
               {showName && <>{showName} · </>}
@@ -177,7 +178,7 @@ function WantCard({ w, auth, onReport, onChat, showName }) {
                 up to {w.maxPrice}
               </div>
             )}
-            {w.userId !== "me" && (
+            {w.userId !== auth?.id && (
               <button
                 className="mp-press"
                 onClick={() => onChat(w.userId)}
@@ -267,15 +268,6 @@ const PEOPLE = [
   { id: "u_jess", name: "Jess W." },
 ];
 
-const SEED_WANTS = [
-  { id: "w1", showId: "s1", userId: "u_marcus", game: "pokemon", card: "Charizard 1st Edition Base Set Holo", detail: "Any grade considered, just want it in hand today", maxPrice: "$8,000", ts: Date.now() - 1000 * 60 * 42 },
-  { id: "w2", showId: "s1", userId: "u_dana", game: "pokemon", card: "Shadowless Blastoise Holo", detail: "PSA 8+ or raw NM, will look at trades too", maxPrice: "$1,800", ts: Date.now() - 1000 * 60 * 25 },
-  { id: "w3", showId: "s1", userId: "u_priya", game: "pokemon", card: "Pikachu Illustrator Promo", detail: "Long shot, but if you've got one — name your price", maxPrice: "$—", ts: Date.now() - 1000 * 60 * 12 },
-  { id: "w4", showId: "s1", userId: "u_lou", game: "pokemon", card: "Umbreon VMAX Alt Art (Evolving Skies)", detail: "Even a lightly played copy — sentimental pickup for my granddaughter", maxPrice: "$350", ts: Date.now() - 1000 * 60 * 5 },
-  { id: "w5", showId: "s2", userId: "u_jess", game: "onepiece", card: "OP01 Shanks Parallel (Romance Dawn)", detail: "Looking for the alternate art SEC, raw or graded", maxPrice: "$900", ts: Date.now() - 1000 * 60 * 70 },
-  { id: "w6", showId: "s2", userId: "u_marcus", game: "onepiece", card: "Luffy Gear 5 Manga Rare (OP-07)", detail: "Just need one to complete my playset", maxPrice: "$220", ts: Date.now() - 1000 * 60 * 8 },
-];
-
 // local fallback/reference datasets used for search suggestions.
 // Pokémon suggestions also try a live lookup against the free TCGdex API
 // (api.tcgdex.net — no key required) and merge the results in; if that
@@ -336,13 +328,14 @@ export default function MegaphoneApp() {
   const [activeShowId, setActiveShowId] = useState(null);
   const [coords, setCoords] = useState(null);
   const [geoState, setGeoState] = useState("idle");
-  const [wants, setWants] = useState(SEED_WANTS);
+  const [wants, setWants] = useState([]);
+  const profileCacheRef = useRef({});
   const [threads, setThreads] = useState(SEED_THREADS);
   const [showPostForm, setShowPostForm] = useState(false);
   const [activeThread, setActiveThread] = useState(null);
   const [query, setQuery] = useState("");
   const [chatOrigin, setChatOrigin] = useState("feed"); // "feed" | "account" | "shows"
-  const [auth, setAuth] = useState({ loggedIn: false, name: "", email: "", premium: false, dealer: false });
+  const [auth, setAuth] = useState({ loggedIn: false, id: null, name: "", email: "", premium: false, dealer: false });
   const [showPaywall, setShowPaywall] = useState(false);
   const [planPerks, setPlanPerks] = useState(null); // "premium" | "dealer" | null
   const [keywordAlerts, setKeywordAlerts] = useState([]);
@@ -371,6 +364,183 @@ export default function MegaphoneApp() {
       { timeout: 4000 }
     );
   }, []);
+
+  // real Supabase auth — a magic-link session drives `auth`, backed by a row
+  // in `profiles` (created on first sign-in) for name/premium/dealer
+  useEffect(() => {
+    let active = true;
+
+    async function syncProfile(session) {
+      if (!session) {
+        if (active) setAuth({ loggedIn: false, id: null, name: "", email: "", premium: false, dealer: false });
+        return;
+      }
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("name, premium, dealer")
+        .eq("id", session.user.id)
+        .maybeSingle();
+
+      let profileRow = profile;
+      if (!profileRow) {
+        const name = session.user.user_metadata?.name || session.user.email.split("@")[0];
+        const { data: inserted } = await supabase
+          .from("profiles")
+          .insert({ id: session.user.id, name })
+          .select("name, premium, dealer")
+          .single();
+        profileRow = inserted || { name, premium: false, dealer: false };
+      }
+
+      if (!active) return;
+      setAuth({
+        loggedIn: true,
+        id: session.user.id,
+        name: profileRow.name,
+        email: session.user.email,
+        premium: !!profileRow.premium,
+        dealer: !!profileRow.dealer,
+      });
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => syncProfile(session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => syncProfile(session));
+
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function sendMagicLink(name, email) {
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin, data: { name } },
+    });
+    if (error) throw error;
+  }
+
+  // premium/dealer are demo self-serve toggles here, but in production these
+  // would be flipped by a payment-webhook using a service role key rather
+  // than the signed-in user updating their own row
+  async function setProfileFlag(flag, value) {
+    setAuth((prev) => ({ ...prev, [flag]: value }));
+    await supabase.from("profiles").update({ [flag]: value }).eq("id", auth.id);
+  }
+
+  // maps a `wants` row (plus an optional embedded `profiles` join) onto the
+  // shape the rest of the UI expects, caching poster name/dealer by user id
+  // so realtime events — which only carry the changed row, not the join —
+  // can still resolve a display name for a poster we've already seen
+  function decorateWant(row) {
+    if (row.profiles) profileCacheRef.current[row.user_id] = row.profiles;
+    const poster = profileCacheRef.current[row.user_id];
+    return {
+      id: row.id,
+      userId: row.user_id,
+      showId: row.show_id,
+      game: row.game,
+      card: row.card,
+      detail: row.detail,
+      maxPrice: row.max_price,
+      boosted: row.boosted,
+      found: row.found,
+      hidden: row.hidden,
+      reports: row.reports,
+      ts: new Date(row.created_at).getTime(),
+      posterName: poster?.name,
+      posterDealer: !!poster?.dealer,
+    };
+  }
+
+  // wants board — loaded once, then kept live via a postgres_changes
+  // subscription so every device sees new/updated/removed shoutouts instantly
+  useEffect(() => {
+    let active = true;
+
+    async function loadWants() {
+      const { data, error } = await supabase
+        .from("wants")
+        .select("*, profiles(name, dealer)")
+        .order("created_at", { ascending: false });
+      if (!active) return;
+      if (error) {
+        console.error("Failed to load wants", error);
+        return;
+      }
+      setWants(data.map(decorateWant));
+    }
+    loadWants();
+
+    const channel = supabase
+      .channel("wants-feed")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "wants" }, async (payload) => {
+        const row = payload.new;
+        if (!profileCacheRef.current[row.user_id]) {
+          const { data: profile } = await supabase.from("profiles").select("name, dealer").eq("id", row.user_id).maybeSingle();
+          if (profile) profileCacheRef.current[row.user_id] = profile;
+        }
+        if (!active) return;
+        setWants((prev) => (prev.some((w) => w.id === row.id) ? prev : [decorateWant(row), ...prev]));
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "wants" }, (payload) => {
+        const row = payload.new;
+        setWants((prev) => prev.map((w) => (w.id === row.id ? decorateWant(row) : w)));
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "wants" }, (payload) => {
+        setWants((prev) => prev.filter((w) => w.id !== payload.old.id));
+      })
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // keyword alerts — scoped to the signed-in user, loaded fresh on login and
+  // kept live so an alert added on another device shows up here too
+  useEffect(() => {
+    if (!auth.id) {
+      setKeywordAlerts([]);
+      return;
+    }
+    let active = true;
+
+    async function loadKeywordAlerts() {
+      const { data, error } = await supabase.from("keyword_alerts").select("keyword").eq("user_id", auth.id);
+      if (!active) return;
+      if (error) {
+        console.error("Failed to load keyword alerts", error);
+        return;
+      }
+      setKeywordAlerts(data.map((row) => row.keyword));
+    }
+    loadKeywordAlerts();
+
+    const channel = supabase
+      .channel(`keyword-alerts-${auth.id}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "keyword_alerts", filter: `user_id=eq.${auth.id}` },
+        (payload) => {
+          setKeywordAlerts((prev) => (prev.includes(payload.new.keyword) ? prev : [...prev, payload.new.keyword]));
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "keyword_alerts", filter: `user_id=eq.${auth.id}` },
+        (payload) => {
+          setKeywordAlerts((prev) => prev.filter((k) => k !== payload.old.keyword));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [auth.id]);
 
   const showsWithDistance = useMemo(() => {
     const now = new Date();
@@ -421,19 +591,24 @@ export default function MegaphoneApp() {
   // keyword alerts — premium/dealer accounts can watch for cards mentioning
   // specific terms across every show, not just the one they're currently viewing
   const canUseAlerts = auth.premium || auth.dealer;
-  function addKeyword(kw) {
+  async function addKeyword(kw) {
     const clean = kw.trim();
-    if (!clean) return;
-    setKeywordAlerts((prev) => (prev.some((k) => k.toLowerCase() === clean.toLowerCase()) ? prev : [...prev, clean]));
+    if (!clean || !auth.id) return;
+    if (keywordAlerts.some((k) => k.toLowerCase() === clean.toLowerCase())) return;
+    const { error } = await supabase.from("keyword_alerts").insert({ user_id: auth.id, keyword: clean });
+    if (error) console.error("Failed to add keyword alert", error);
+    // realtime INSERT event appends it to `keywordAlerts` once it lands
   }
-  function removeKeyword(kw) {
-    setKeywordAlerts((prev) => prev.filter((k) => k !== kw));
+  async function removeKeyword(kw) {
+    if (!auth.id) return;
+    const { error } = await supabase.from("keyword_alerts").delete().eq("user_id", auth.id).eq("keyword", kw);
+    if (error) console.error("Failed to remove keyword alert", error);
   }
   const alertMatches = useMemo(() => {
     if (!canUseAlerts || keywordAlerts.length === 0) return [];
     const lowerKeywords = keywordAlerts.map((k) => k.toLowerCase());
     return wants
-      .filter((w) => w.userId !== "me" && !w.hidden)
+      .filter((w) => w.userId !== auth.id && !w.hidden)
       .filter((w) => {
         const haystack = `${w.card} ${w.detail || ""}`.toLowerCase();
         return lowerKeywords.some((k) => haystack.includes(k));
@@ -457,7 +632,7 @@ export default function MegaphoneApp() {
   function matchesFilters(w) {
     if (gameFilter !== "all" && w.game !== gameFilter) return false;
     if (boostedOnly && !w.boosted) return false;
-    if (dealersOnly && !isDealer(w.userId, auth)) return false;
+    if (dealersOnly && !(w.userId === auth.id ? auth.dealer : w.posterDealer)) return false;
     if (query && !w.card.toLowerCase().includes(query.toLowerCase())) return false;
     return true;
   }
@@ -494,13 +669,27 @@ export default function MegaphoneApp() {
       .slice(0, 3);
   }, [wants, activeShowId]);
 
-  function addWant(entry) {
-    setWants((prev) => [{ id: `w${Date.now()}`, showId: activeShowId, userId: "me", ts: Date.now(), ...entry }, ...prev]);
+  async function addWant(entry) {
+    const { error } = await supabase.from("wants").insert({
+      user_id: auth.id,
+      show_id: activeShowId,
+      game: entry.game,
+      card: entry.card,
+      detail: entry.detail || null,
+      max_price: entry.maxPrice || null,
+      boosted: !!entry.boosted,
+    });
+    if (error) {
+      console.error("Failed to post shoutout", error);
+      return;
+    }
     setShowPostForm(false);
+    // the realtime INSERT subscription appends it to `wants` once it lands
   }
 
-  function markFound(wantId) {
-    setWants((prev) => prev.map((w) => (w.id === wantId ? { ...w, found: true } : w)));
+  async function markFound(wantId) {
+    const { error } = await supabase.from("wants").update({ found: true }).eq("id", wantId);
+    if (error) console.error("Failed to mark want as found", error);
   }
 
   // "scan to search" — captures a photo and identifies the card. Real version
@@ -535,7 +724,7 @@ export default function MegaphoneApp() {
 
   const myThreadIds = Object.keys(threads).filter((id) => threads[id].length > 0);
   const myWants = wants
-    .filter((w) => w.userId === "me")
+    .filter((w) => w.userId === auth.id)
     .map((w) => ({ ...w, showName: SHOWS.find((s) => s.id === w.showId)?.name || "" }))
     .sort((a, b) => b.ts - a.ts);
   const isAccountTab =
@@ -974,7 +1163,9 @@ export default function MegaphoneApp() {
           <button
             className="mp-press"
             onClick={() => {
-              if (!auth.premium && myWants.length >= FREE_SHOUT_LIMIT) {
+              if (!auth.loggedIn) {
+                setScreen("account");
+              } else if (!auth.premium && myWants.length >= FREE_SHOUT_LIMIT) {
                 setShowPaywall(true);
               } else {
                 setShowPostForm(true);
@@ -1039,10 +1230,10 @@ export default function MegaphoneApp() {
       {screen === "account" && (
         <AccountScreen
           auth={auth}
-          onLogin={(name, email) => setAuth((prev) => ({ ...prev, loggedIn: true, name, email }))}
-          onLogout={() => setAuth({ loggedIn: false, name: "", email: "", premium: false, dealer: false })}
-          onTogglePremium={() => setAuth((prev) => ({ ...prev, premium: !prev.premium }))}
-          onToggleDealer={() => setAuth((prev) => ({ ...prev, dealer: !prev.dealer }))}
+          onSendMagicLink={sendMagicLink}
+          onLogout={() => supabase.auth.signOut()}
+          onTogglePremium={() => setProfileFlag("premium", !auth.premium)}
+          onToggleDealer={() => setProfileFlag("dealer", !auth.dealer)}
           onOpenPremiumPerks={() => setPlanPerks("premium")}
           onOpenDealerPerks={() => setPlanPerks("dealer")}
           myWants={myWants}
@@ -1103,6 +1294,24 @@ export default function MegaphoneApp() {
         </button>
       </div>
 
+      {/* ---------------- FOOTER ---------------- */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 4,
+          flexShrink: 0,
+          textAlign: "center",
+          background: "rgba(255,255,255,0.45)",
+          padding: "4px 0 8px",
+          fontSize: 10.5,
+          fontWeight: 600,
+          letterSpacing: "0.02em",
+          color: C.inkFaint,
+        }}
+      >
+        Product of xebec.rocks
+      </div>
+
       {/* ---------------- POST FORM MODAL ---------------- */}
       {showPostForm && <PostForm onClose={() => setShowPostForm(false)} onSubmit={addWant} />}
 
@@ -1124,7 +1333,7 @@ export default function MegaphoneApp() {
           kind={planPerks}
           onClose={() => setPlanPerks(null)}
           onProceed={() => {
-            setAuth((prev) => ({ ...prev, [planPerks]: true }));
+            setProfileFlag(planPerks, true);
             setPlanPerks(null);
           }}
         />
@@ -1203,10 +1412,26 @@ function ChatThread({ otherId, messages, onSend }) {
   );
 }
 
-function AccountScreen({ auth, onLogin, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword }) {
+function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword }) {
   const [view, setView] = useState("shoutouts");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+  const [linkSent, setLinkSent] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  async function handleSendLink() {
+    setSending(true);
+    setAuthError("");
+    try {
+      await onSendMagicLink(name.trim(), email.trim());
+      setLinkSent(true);
+    } catch (err) {
+      setAuthError(err.message || "Couldn't send the login link. Try again.");
+    } finally {
+      setSending(false);
+    }
+  }
 
   const fieldStyle = {
     width: "100%",
@@ -1234,33 +1459,56 @@ function AccountScreen({ auth, onLogin, onLogout, onTogglePremium, onToggleDeale
             Track your own shoutouts and pick up chats right where you left off.
           </div>
 
-          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Name</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ash K." style={fieldStyle} />
+          {linkSent ? (
+            <div style={{ textAlign: "center", padding: "12px 4px" }}>
+              <Check size={22} color={C.green} style={{ marginBottom: 8 }} />
+              <div style={{ fontSize: 14.5, fontWeight: 650, marginBottom: 4 }}>Check your email</div>
+              <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.4 }}>
+                We sent a login link to <strong>{email}</strong>. Open it on this device to sign in.
+              </div>
+              <button
+                className="mp-press"
+                onClick={() => setLinkSent(false)}
+                style={{ marginTop: 14, background: "none", border: "none", color: C.blue, fontSize: 13, fontWeight: 650, padding: 0 }}
+              >
+                Use a different email
+              </button>
+            </div>
+          ) : (
+            <>
+              <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Name</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ash K." style={fieldStyle} />
 
-          <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Email</label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" style={fieldStyle} />
+              <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Email</label>
+              <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" style={fieldStyle} />
 
-          <button
-            className="mp-press"
-            disabled={!name.trim() || !email.trim()}
-            onClick={() => onLogin(name.trim(), email.trim())}
-            style={{
-              width: "100%",
-              background: name.trim() && email.trim() ? C.blue : "rgba(120,120,128,0.25)",
-              color: "white",
-              border: "none",
-              borderRadius: 14,
-              padding: "13px",
-              fontWeight: 650,
-              fontSize: 15,
-              boxShadow: name.trim() && email.trim() ? "0 6px 16px rgba(10,132,255,0.35)" : "none",
-            }}
-          >
-            Log In
-          </button>
-          <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 10, textAlign: "center" }}>
-            Demo login — no password needed, just tap in.
-          </div>
+              {authError && (
+                <div style={{ fontSize: 12.5, color: C.red, marginBottom: 12, fontWeight: 600 }}>{authError}</div>
+              )}
+
+              <button
+                className="mp-press"
+                disabled={!name.trim() || !email.trim() || sending}
+                onClick={handleSendLink}
+                style={{
+                  width: "100%",
+                  background: name.trim() && email.trim() && !sending ? C.blue : "rgba(120,120,128,0.25)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 14,
+                  padding: "13px",
+                  fontWeight: 650,
+                  fontSize: 15,
+                  boxShadow: name.trim() && email.trim() ? "0 6px 16px rgba(10,132,255,0.35)" : "none",
+                }}
+              >
+                {sending ? "Sending…" : "Email me a login link"}
+              </button>
+              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 10, textAlign: "center" }}>
+                No password — we'll email you a secure link to sign in.
+              </div>
+            </>
+          )}
         </Glass>
       </div>
     );
@@ -1626,7 +1874,7 @@ function AlertsScreen({ canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeywo
               {m.detail && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4 }}>{m.detail}</div>}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
                 <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{personName(m.userId)} · {m.showName}</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{m.posterName || "A collector"} · {m.showName}</div>
                   <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(m.ts)}</div>
                 </div>
                 <button
