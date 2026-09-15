@@ -1386,6 +1386,24 @@ export default function MegaphoneApp() {
         </button>
       </div>
 
+      {/* ---------------- FOOTER ---------------- */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 4,
+          flexShrink: 0,
+          textAlign: "center",
+          background: "rgba(255,255,255,0.45)",
+          padding: "4px 0 8px",
+          fontSize: 10.5,
+          fontWeight: 600,
+          letterSpacing: "0.02em",
+          color: C.inkFaint,
+        }}
+      >
+        Product of xebec.rocks
+      </div>
+
       {/* ---------------- POST FORM MODAL ---------------- */}
       {showPostForm && <PostForm onClose={() => setShowPostForm(false)} onSubmit={addWant} watchlist={watchlist} />}
 
