@@ -558,6 +558,10 @@ export default function MegaphoneApp() {
     };
   }, [auth.id]);
 
+  function decorateWatchlistRow(row) {
+    return { id: row.id, game: row.game, card: row.card, detail: row.detail, maxPrice: row.max_price };
+  }
+
   // want list — a personal, per-user list of cards to look for, prepped ahead
   // of a show so they can be quick-selected onto the board instead of retyped
   useEffect(() => {
@@ -566,10 +570,6 @@ export default function MegaphoneApp() {
       return;
     }
     let active = true;
-
-    function decorateWatchlistRow(row) {
-      return { id: row.id, game: row.game, card: row.card, detail: row.detail, maxPrice: row.max_price };
-    }
 
     async function loadWatchlist() {
       const { data, error } = await supabase
@@ -613,17 +613,29 @@ export default function MegaphoneApp() {
 
   async function addToWatchlist(entry) {
     if (!auth.id || !entry.card?.trim()) return;
-    const { error } = await supabase.from("want_list").insert({
-      user_id: auth.id,
-      game: entry.game,
-      card: entry.card.trim(),
-      detail: entry.detail?.trim() || null,
-      max_price: entry.maxPrice?.trim() || null,
-    });
-    if (error) console.error("Failed to add to want list", error);
+    const { data, error } = await supabase
+      .from("want_list")
+      .insert({
+        user_id: auth.id,
+        game: entry.game,
+        card: entry.card.trim(),
+        detail: entry.detail?.trim() || null,
+        max_price: entry.maxPrice?.trim() || null,
+      })
+      .select()
+      .single();
+    if (error) {
+      console.error("Failed to add to want list", error);
+      return;
+    }
+    // don't wait on the realtime INSERT event to show the new card — apply it
+    // now; the realtime handler dedupes by id if the event also arrives
+    const row = data;
+    setWatchlist((prev) => (prev.some((w) => w.id === row.id) ? prev : [decorateWatchlistRow(row), ...prev]));
   }
   async function removeFromWatchlist(id) {
     if (!auth.id) return;
+    setWatchlist((prev) => prev.filter((w) => w.id !== id));
     const { error } = await supabase.from("want_list").delete().eq("id", id).eq("user_id", auth.id);
     if (error) console.error("Failed to remove from want list", error);
   }
