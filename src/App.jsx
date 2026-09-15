@@ -896,12 +896,19 @@ export default function MegaphoneApp() {
               <ArrowLeft size={16} color={C.ink} />
             </button>
           )}
-          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em" }}>
-            {screen === "shows" && "Megaphone"}
-            {screen === "feed" && (activeShow?.name || "")}
-            {(screen === "chatlist" || screen === "chat") && "Messages"}
-            {screen === "account" && "Account"}
-            {screen === "alerts" && "Card Alerts"}
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em" }}>
+              {screen === "shows" && "Megaphone"}
+              {screen === "feed" && (activeShow?.name || "")}
+              {(screen === "chatlist" || screen === "chat") && "Messages"}
+              {screen === "account" && "Account"}
+              {screen === "alerts" && "Card Alerts"}
+            </div>
+            {screen === "shows" && (
+              <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: "0.02em", color: C.inkFaint }}>
+                Made by xebec.rocks
+              </div>
+            )}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1384,24 +1391,6 @@ export default function MegaphoneApp() {
           <User size={20} color={isAccountTab ? C.blue : C.inkFaint} />
           <span style={{ fontSize: 11, fontWeight: 600, color: isAccountTab ? C.blue : C.inkFaint }}>Account</span>
         </button>
-      </div>
-
-      {/* ---------------- FOOTER ---------------- */}
-      <div
-        style={{
-          position: "relative",
-          zIndex: 4,
-          flexShrink: 0,
-          textAlign: "center",
-          background: "rgba(255,255,255,0.45)",
-          padding: "4px 0 8px",
-          fontSize: 10.5,
-          fontWeight: 600,
-          letterSpacing: "0.02em",
-          color: C.inkFaint,
-        }}
-      >
-        Product of xebec.rocks
       </div>
 
       {/* ---------------- POST FORM MODAL ---------------- */}
