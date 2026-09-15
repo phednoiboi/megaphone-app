@@ -250,7 +250,15 @@ const SHOWS = [
   { id: "s4", name: "Toa Payoh Bounty Hunters One Piece Meet", venue: "Toa Payoh HDB Hub, Atrium", lat: 1.3326, lng: 103.8489, start: atTime(daysUntilWeekday(6) || 7, 11, 0), end: atTime(daysUntilWeekday(6) || 7, 19, 0) },
 ];
 
-const FREE_SHOUT_LIMIT = 3;
+// free accounts can shout unlimited cards, just no more than once per hour —
+// Premium removes the wait entirely
+const FREE_SHOUT_COOLDOWN_MS = 60 * 60 * 1000;
+function formatCooldown(ms) {
+  const totalMin = Math.ceil(ms / 60000);
+  if (totalMin >= 60) return "1h";
+  if (totalMin >= 1) return `${totalMin}m`;
+  return "under a minute";
+}
 
 // basic on-topic / spam guard — real moderation happens server-side (see notes),
 // this just catches obvious junk before it's even submitted
@@ -348,6 +356,14 @@ export default function MegaphoneApp() {
   const [showFilters, setShowFilters] = useState(false);
   const [scanningCard, setScanningCard] = useState(false);
   const scanInputRef = useRef(null);
+  const [watchlist, setWatchlist] = useState([]);
+  const [now, setNow] = useState(() => Date.now());
+
+  // ticks so the "next free shoutout" cooldown countdown stays live
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -542,6 +558,76 @@ export default function MegaphoneApp() {
     };
   }, [auth.id]);
 
+  // want list — a personal, per-user list of cards to look for, prepped ahead
+  // of a show so they can be quick-selected onto the board instead of retyped
+  useEffect(() => {
+    if (!auth.id) {
+      setWatchlist([]);
+      return;
+    }
+    let active = true;
+
+    function decorateWatchlistRow(row) {
+      return { id: row.id, game: row.game, card: row.card, detail: row.detail, maxPrice: row.max_price };
+    }
+
+    async function loadWatchlist() {
+      const { data, error } = await supabase
+        .from("want_list")
+        .select("*")
+        .eq("user_id", auth.id)
+        .order("created_at", { ascending: false });
+      if (!active) return;
+      if (error) {
+        console.error("Failed to load want list", error);
+        return;
+      }
+      setWatchlist(data.map(decorateWatchlistRow));
+    }
+    loadWatchlist();
+
+    const channel = supabase
+      .channel(`want-list-${auth.id}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "want_list", filter: `user_id=eq.${auth.id}` },
+        (payload) => {
+          const row = payload.new;
+          setWatchlist((prev) => (prev.some((w) => w.id === row.id) ? prev : [decorateWatchlistRow(row), ...prev]));
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "want_list", filter: `user_id=eq.${auth.id}` },
+        (payload) => {
+          setWatchlist((prev) => prev.filter((w) => w.id !== payload.old.id));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [auth.id]);
+
+  async function addToWatchlist(entry) {
+    if (!auth.id || !entry.card?.trim()) return;
+    const { error } = await supabase.from("want_list").insert({
+      user_id: auth.id,
+      game: entry.game,
+      card: entry.card.trim(),
+      detail: entry.detail?.trim() || null,
+      max_price: entry.maxPrice?.trim() || null,
+    });
+    if (error) console.error("Failed to add to want list", error);
+  }
+  async function removeFromWatchlist(id) {
+    if (!auth.id) return;
+    const { error } = await supabase.from("want_list").delete().eq("id", id).eq("user_id", auth.id);
+    if (error) console.error("Failed to remove from want list", error);
+  }
+
   const showsWithDistance = useMemo(() => {
     const now = new Date();
     return SHOWS.filter((s) => s.end >= now)
@@ -727,6 +813,9 @@ export default function MegaphoneApp() {
     .filter((w) => w.userId === auth.id)
     .map((w) => ({ ...w, showName: SHOWS.find((s) => s.id === w.showId)?.name || "" }))
     .sort((a, b) => b.ts - a.ts);
+  const lastShoutTs = myWants[0]?.ts || null;
+  const cooldownRemainingMs = !auth.premium && lastShoutTs ? FREE_SHOUT_COOLDOWN_MS - (now - lastShoutTs) : 0;
+  const onShoutCooldown = cooldownRemainingMs > 0;
   const isAccountTab =
     screen === "account" ||
     (chatOrigin === "account" && (screen === "chatlist" || screen === "chat")) ||
@@ -1083,8 +1172,8 @@ export default function MegaphoneApp() {
 
             {!auth.premium && (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, padding: "0 4px" }}>
-                <span style={{ fontSize: 11.5, color: C.inkSoft }}>
-                  {Math.max(0, FREE_SHOUT_LIMIT - myWants.length)} free shoutout{Math.max(0, FREE_SHOUT_LIMIT - myWants.length) === 1 ? "" : "s"} left this month
+                <span style={{ fontSize: 11.5, color: onShoutCooldown ? C.gold : C.inkSoft, fontWeight: onShoutCooldown ? 650 : 400 }}>
+                  {onShoutCooldown ? `Next free shoutout in ${formatCooldown(cooldownRemainingMs)}` : "Free plan: 1 shoutout per hour"}
                 </span>
                 <button className="mp-press" onClick={() => setShowPaywall(true)} style={{ background: "none", border: "none", color: C.gold, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 3, padding: 0 }}>
                   <Crown size={12} /> Go Premium
@@ -1165,7 +1254,7 @@ export default function MegaphoneApp() {
             onClick={() => {
               if (!auth.loggedIn) {
                 setScreen("account");
-              } else if (!auth.premium && myWants.length >= FREE_SHOUT_LIMIT) {
+              } else if (onShoutCooldown) {
                 setShowPaywall(true);
               } else {
                 setShowPostForm(true);
@@ -1245,6 +1334,9 @@ export default function MegaphoneApp() {
           keywordAlerts={keywordAlerts}
           onAddKeyword={addKeyword}
           onRemoveKeyword={removeKeyword}
+          watchlist={watchlist}
+          onAddToWatchlist={addToWatchlist}
+          onRemoveFromWatchlist={removeFromWatchlist}
         />
       )}
 
@@ -1295,11 +1387,12 @@ export default function MegaphoneApp() {
       </div>
 
       {/* ---------------- POST FORM MODAL ---------------- */}
-      {showPostForm && <PostForm onClose={() => setShowPostForm(false)} onSubmit={addWant} />}
+      {showPostForm && <PostForm onClose={() => setShowPostForm(false)} onSubmit={addWant} watchlist={watchlist} />}
 
       {/* ---------------- PAYWALL MODAL ---------------- */}
       {showPaywall && (
         <Paywall
+          waitLabel={onShoutCooldown ? formatCooldown(cooldownRemainingMs) : null}
           onClose={() => setShowPaywall(false)}
           onUpgrade={() => {
             setAuth((prev) => ({ ...prev, premium: true }));
@@ -1394,7 +1487,7 @@ function ChatThread({ otherId, messages, onSend }) {
   );
 }
 
-function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword }) {
+function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword, watchlist, onAddToWatchlist, onRemoveFromWatchlist }) {
   const [view, setView] = useState("shoutouts");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -1558,7 +1651,7 @@ function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onTog
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14.5, fontWeight: 650 }}>{auth.premium ? "Premium — active" : "Megaphone Premium"}</div>
             <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 1 }}>
-              {auth.premium ? "Unlimited shoutouts, no ads." : "Unlimited shoutouts + no ads — $4.99/mo"}
+              {auth.premium ? "Post anytime, no ads." : "Post anytime + no ads — $4.99/mo"}
             </div>
           </div>
           <button
@@ -1654,7 +1747,7 @@ function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onTog
       </Glass>
 
       <Glass radius={14} style={{ display: "flex", padding: 4, marginBottom: 14, boxShadow: "none" }}>
-        {["shoutouts", "chats"].map((v) => (
+        {["shoutouts", "wantlist", "chats"].map((v) => (
           <button
             key={v}
             className="mp-press"
@@ -1671,10 +1764,14 @@ function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onTog
               boxShadow: view === v ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
             }}
           >
-            {v === "shoutouts" ? "My Shoutouts" : "Chats"}
+            {v === "shoutouts" ? "My Shoutouts" : v === "wantlist" ? "Want List" : "Chats"}
           </button>
         ))}
       </Glass>
+
+      {view === "wantlist" && (
+        <WantListEditor watchlist={watchlist} onAdd={onAddToWatchlist} onRemove={onRemoveFromWatchlist} />
+      )}
 
       {view === "shoutouts" && (
         <>
@@ -1749,6 +1846,128 @@ function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onTog
         </>
       )}
     </div>
+  );
+}
+
+// personal want list — cards a collector is hunting for, prepped ahead of a
+// show so they can be quick-selected straight onto the board (see PostForm)
+function WantListEditor({ watchlist, onAdd, onRemove }) {
+  const [game, setGame] = useState("pokemon");
+  const [card, setCard] = useState("");
+  const [detail, setDetail] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+
+  function handleAdd() {
+    if (!card.trim()) return;
+    onAdd({ game, card, detail, maxPrice });
+    setCard("");
+    setDetail("");
+    setMaxPrice("");
+  }
+
+  const fieldStyle = {
+    width: "100%",
+    marginTop: 6,
+    marginBottom: 10,
+    border: `1px solid ${C.hairline}`,
+    background: "rgba(255,255,255,0.6)",
+    borderRadius: 12,
+    padding: "10px 13px",
+    fontSize: 14,
+    outline: "none",
+    boxSizing: "border-box",
+    fontFamily: FONT,
+  };
+
+  return (
+    <>
+      <Glass radius={18} style={{ padding: "14px 16px", marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 2 }}>Add a card</div>
+        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 10, lineHeight: 1.4 }}>
+          Build your list before you head out — at the show, quick-select from it instead of retyping.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+          {[
+            { id: "pokemon", label: "Pokémon" },
+            { id: "onepiece", label: "One Piece" },
+          ].map((g) => (
+            <button
+              key={g.id}
+              className="mp-press"
+              onClick={() => {
+                setGame(g.id);
+                setCard("");
+              }}
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                borderRadius: 10,
+                border: game === g.id ? `1.5px solid ${C.blue}` : `1px solid ${C.hairline}`,
+                background: game === g.id ? "rgba(10,132,255,0.1)" : "rgba(255,255,255,0.5)",
+                color: game === g.id ? C.blue : C.inkSoft,
+                fontSize: 13,
+                fontWeight: 650,
+              }}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+        <CardTypeahead value={card} onChange={setCard} game={game} placeholder="Card name…" style={fieldStyle} />
+        <input value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="Details (optional)" style={fieldStyle} />
+        <input value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)} placeholder="Budget (optional)" style={fieldStyle} />
+        <button
+          className="mp-press"
+          disabled={!card.trim()}
+          onClick={handleAdd}
+          style={{
+            width: "100%",
+            background: card.trim() ? C.blue : "rgba(120,120,128,0.25)",
+            color: "white",
+            border: "none",
+            borderRadius: 12,
+            padding: "11px",
+            fontWeight: 650,
+            fontSize: 14,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+          }}
+        >
+          <Plus size={15} /> Add to want list
+        </button>
+      </Glass>
+
+      {watchlist.length === 0 ? (
+        <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 20, fontSize: 14 }}>
+          Your want list is empty — add cards above so they're ready to quick-select at your next show.
+        </div>
+      ) : (
+        watchlist.map((w) => (
+          <div key={w.id} style={{ marginBottom: 10 }}>
+            <Glass radius={16} style={{ padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 650 }}>{w.card}</div>
+                <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 2 }}>
+                  {w.game === "onepiece" ? "One Piece" : "Pokémon"}
+                  {w.maxPrice && ` · up to ${w.maxPrice}`}
+                </div>
+                {w.detail && <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 4 }}>{w.detail}</div>}
+              </div>
+              <button
+                className="mp-press"
+                onClick={() => onRemove(w.id)}
+                style={{ background: "rgba(120,120,128,0.16)", border: "none", borderRadius: 999, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                aria-label={`Remove ${w.card}`}
+              >
+                <X size={13} color={C.inkSoft} />
+              </button>
+            </Glass>
+          </div>
+        ))
+      )}
+    </>
   );
 }
 
@@ -1875,7 +2094,7 @@ function AlertsScreen({ canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeywo
   );
 }
 
-function PostForm({ onClose, onSubmit }) {
+function PostForm({ onClose, onSubmit, watchlist = [] }) {
   const [card, setCard] = useState("");
   const [game, setGame] = useState("pokemon");
   const [detail, setDetail] = useState("");
@@ -1934,6 +2153,38 @@ function PostForm({ onClose, onSubmit }) {
               <X size={15} color={C.inkSoft} />
             </button>
           </div>
+
+          {watchlist.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Quick pick from your want list</label>
+              <div className="mp-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 8, paddingBottom: 2 }}>
+                {watchlist.map((w) => (
+                  <button
+                    key={w.id}
+                    className="mp-press"
+                    onClick={() => {
+                      setGame(w.game || "pokemon");
+                      setCard(w.card);
+                      setDetail(w.detail || "");
+                      setMaxPrice(w.maxPrice || "");
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      background: "rgba(10,132,255,0.08)",
+                      border: `1px solid ${C.hairline}`,
+                      borderRadius: 12,
+                      padding: "8px 12px",
+                      textAlign: "left",
+                      maxWidth: 170,
+                    }}
+                  >
+                    <div style={{ fontSize: 12.5, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{w.card}</div>
+                    <div style={{ fontSize: 10, color: C.inkFaint, marginTop: 1 }}>{w.game === "onepiece" ? "One Piece" : "Pokémon"}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Which game?</label>
           <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
@@ -2051,7 +2302,7 @@ function PostForm({ onClose, onSubmit }) {
   );
 }
 
-function Paywall({ onClose, onUpgrade }) {
+function Paywall({ waitLabel, onClose, onUpgrade }) {
   return (
     <div
       style={{ position: "absolute", inset: 0, background: "rgba(28,28,30,0.35)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", zIndex: 10, borderRadius: 28 }}
@@ -2074,18 +2325,20 @@ function Paywall({ onClose, onUpgrade }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Crown size={20} color={C.gold} />
-              <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.01em" }}>You're out of free shoutouts</div>
+              <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.01em" }}>{waitLabel ? "You're on cooldown" : "Go Premium"}</div>
             </div>
             <button className="mp-press" onClick={onClose} style={{ background: "rgba(120,120,128,0.16)", border: "none", borderRadius: 999, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <X size={15} color={C.inkSoft} />
             </button>
           </div>
           <div style={{ fontSize: 13.5, color: C.inkSoft, marginBottom: 16, lineHeight: 1.4 }}>
-            Free accounts get {FREE_SHOUT_LIMIT} shoutouts a month. Go Premium for unlimited shoutouts and an ad-free board.
+            {waitLabel
+              ? `Free accounts can shout out one card per hour — you can post again in ${waitLabel}. Go Premium to post anytime, no wait.`
+              : "Free accounts can shout out one card per hour. Go Premium to post anytime, no wait, plus an ad-free board."}
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
-            {["Unlimited shoutouts, every show", "No ads, ever", "Priority match alerts"].map((b) => (
+            {["Post anytime — no 1-hour wait", "No ads, ever", "Priority match alerts"].map((b) => (
               <div key={b} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
                 <Check size={14} color={C.green} /> {b}
               </div>
@@ -2131,12 +2384,12 @@ const PLAN_INFO = {
     color: C.gold,
     tint: "rgba(201,138,11,0.14)",
     title: "Megaphone Premium",
-    subtitle: "Unlimited shoutouts and an ad-free board.",
+    subtitle: "Post anytime and an ad-free board.",
     price: "$4.99/mo",
     gradient: "linear-gradient(135deg, #C98A0B, #FFD60A)",
     buttonTextColor: "#3A2900",
     perks: [
-      "Unlimited shoutouts, every show",
+      "Post anytime — skip the 1-hour free cooldown",
       "No ads, ever",
       "Priority match alerts",
       "Keyword alerts across every show",
