@@ -23,10 +23,11 @@ const FONT =
 const MONO = "ui-monospace, 'SF Mono', 'IBM Plex Mono', Menlo, monospace";
 
 // reusable frosted glass surface
-function Glass({ children, style, strong, dark, radius = 20, onClick }) {
+function Glass({ children, style, strong, dark, radius = 20, onClick, className }) {
   return (
     <div
       onClick={onClick}
+      className={className}
       style={{
         background: dark ? C.glassDark : strong ? C.glassStrong : C.glass,
         backdropFilter: "blur(24px) saturate(180%)",
@@ -128,10 +129,14 @@ function CardTypeahead({ value, onChange, game, placeholder, style }) {
   );
 }
 
-function WantCard({ w, auth, onReport, onChat, showName }) {
+function WantCard({ w, auth, onReport, onChat, showName, isNew }) {
   return (
     <div style={{ marginBottom: 12 }}>
-      <Glass radius={20} style={{ padding: "16px 18px", border: w.boosted ? `1.5px solid ${C.gold}` : undefined, boxShadow: w.boosted ? "0 8px 26px rgba(201,138,11,0.22)" : undefined }}>
+      <Glass
+        radius={20}
+        className={isNew ? "mp-pulse-new" : undefined}
+        style={{ padding: "16px 18px", border: w.boosted ? `1.5px solid ${C.gold}` : undefined, boxShadow: w.boosted ? "0 8px 26px rgba(201,138,11,0.22)" : undefined }}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           {w.boosted ? (
             <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8, color: C.gold, fontSize: 10.5, fontWeight: 700 }}>
@@ -295,13 +300,6 @@ const ONE_PIECE_CARD_DATASET = [
   "Boa Hancock", "Yamato", "Eustass Kid", "Dracule Mihawk", "Charlotte Katakuri",
 ];
 
-const SEED_THREADS = {
-  u_marcus: [
-    { from: "u_marcus", text: "Hey — I've got a raw Charizard Base Set, edge wear on the back but front's clean. Interested?", ts: Date.now() - 1000 * 60 * 20 },
-    { from: "me", text: "Depends on the wear — can you send a photo of the back corners?", ts: Date.now() - 1000 * 60 * 18 },
-  ],
-};
-
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -319,10 +317,9 @@ function timeAgo(ts) {
   return `${hrs}h ago`;
 }
 
-function personName(id) {
+function personName(id, profiles) {
   if (id === "me") return "You";
-  const p = PEOPLE.find((p) => p.id === id);
-  return p ? p.name : id;
+  return profiles?.[id]?.name || PEOPLE.find((p) => p.id === id)?.name || "A collector";
 }
 
 function isDealer(id, auth) {
@@ -338,7 +335,8 @@ export default function MegaphoneApp() {
   const [geoState, setGeoState] = useState("idle");
   const [wants, setWants] = useState([]);
   const profileCacheRef = useRef({});
-  const [threads, setThreads] = useState(SEED_THREADS);
+  const [chatProfiles, setChatProfiles] = useState({});
+  const [messages, setMessages] = useState([]);
   const [showPostForm, setShowPostForm] = useState(false);
   const [activeThread, setActiveThread] = useState(null);
   const [query, setQuery] = useState("");
@@ -358,6 +356,32 @@ export default function MegaphoneApp() {
   const scanInputRef = useRef(null);
   const [watchlist, setWatchlist] = useState([]);
   const [now, setNow] = useState(() => Date.now());
+
+  // ids/card-names that just arrived live via the wants realtime subscription
+  // (never populated by the initial load) — briefly pulsed in the feed and
+  // in Trending Now to draw the eye, then cleared back to normal styling
+  const [justArrivedIds, setJustArrivedIds] = useState(() => new Set());
+  const [justArrivedCards, setJustArrivedCards] = useState(() => new Set());
+  function flagJustArrived(id, cardName) {
+    setJustArrivedIds((prev) => new Set(prev).add(id));
+    setJustArrivedCards((prev) => new Set(prev).add(cardName));
+    setTimeout(() => {
+      setJustArrivedIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 2800);
+    setTimeout(() => {
+      setJustArrivedCards((prev) => {
+        if (!prev.has(cardName)) return prev;
+        const next = new Set(prev);
+        next.delete(cardName);
+        return next;
+      });
+    }, 2800);
+  }
 
   // ticks so the "next free shoutout" cooldown countdown stays live
   useEffect(() => {
@@ -498,6 +522,7 @@ export default function MegaphoneApp() {
         }
         if (!active) return;
         setWants((prev) => (prev.some((w) => w.id === row.id) ? prev : [decorateWant(row), ...prev]));
+        flagJustArrived(row.id, row.card);
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "wants" }, (payload) => {
         const row = payload.new;
@@ -810,17 +835,120 @@ export default function MegaphoneApp() {
   }
 
   function openChat(userId, origin = "feed") {
+    if (!auth.loggedIn) {
+      setScreen("account");
+      return;
+    }
     setChatOrigin(origin);
     setActiveThread(userId);
     setScreen("chat");
   }
 
-  function sendMessage(text) {
-    if (!text.trim()) return;
-    setThreads((prev) => {
-      const existing = prev[activeThread] || [];
-      return { ...prev, [activeThread]: [...existing, { from: "me", text, ts: Date.now() }] };
+  // chat — real Supabase-backed messages, loaded for the signed-in user and
+  // kept live via a postgres_changes subscription so both sides of a
+  // conversation see new messages without refreshing
+  useEffect(() => {
+    if (!auth.id) {
+      setMessages([]);
+      setChatProfiles({});
+      return;
+    }
+    let active = true;
+
+    function decorateMessage(row) {
+      return { id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, text: row.text, ts: new Date(row.created_at).getTime() };
+    }
+
+    // realtime events only carry the message row, not a joined profile — fetch
+    // and cache the other party's name/dealer status the first time we see them
+    async function resolveProfiles(ids) {
+      const unknown = [...new Set(ids)].filter((id) => id && id !== auth.id && !profileCacheRef.current[id]);
+      if (unknown.length === 0) return;
+      const { data } = await supabase.from("profiles").select("id, name, dealer").in("id", unknown);
+      if (!active || !data) return;
+      const additions = {};
+      data.forEach((p) => {
+        profileCacheRef.current[p.id] = p;
+        additions[p.id] = p;
+      });
+      setChatProfiles((prev) => ({ ...prev, ...additions }));
+    }
+
+    async function loadMessages() {
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .or(`sender_id.eq.${auth.id},recipient_id.eq.${auth.id}`)
+        .order("created_at", { ascending: true });
+      if (!active) return;
+      if (error) {
+        console.error("Failed to load messages", error);
+        return;
+      }
+      const rows = data.map(decorateMessage);
+      setMessages(rows);
+      resolveProfiles(rows.map((m) => (m.senderId === auth.id ? m.recipientId : m.senderId)));
+    }
+    loadMessages();
+
+    const channel = supabase
+      .channel(`messages-${auth.id}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: `recipient_id=eq.${auth.id}` },
+        (payload) => {
+          const row = decorateMessage(payload.new);
+          if (!active) return;
+          setMessages((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]));
+          resolveProfiles([row.senderId]);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: `sender_id=eq.${auth.id}` },
+        (payload) => {
+          const row = decorateMessage(payload.new);
+          if (!active) return;
+          setMessages((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [auth.id]);
+
+  // group flat message rows into per-conversation threads keyed by the other
+  // participant's id — same shape the chat UI already expects
+  const threads = useMemo(() => {
+    const grouped = {};
+    messages.forEach((m) => {
+      const otherId = m.senderId === auth.id ? m.recipientId : m.senderId;
+      if (!grouped[otherId]) grouped[otherId] = [];
+      grouped[otherId].push({ from: m.senderId === auth.id ? "me" : otherId, text: m.text, ts: m.ts });
     });
+    return grouped;
+  }, [messages, auth.id]);
+
+  async function sendMessage(text) {
+    const trimmed = text.trim();
+    if (!trimmed || !activeThread || !auth.id) return;
+    const { data, error } = await supabase
+      .from("messages")
+      .insert({ sender_id: auth.id, recipient_id: activeThread, text: trimmed })
+      .select()
+      .single();
+    if (error) {
+      console.error("Failed to send message", error);
+      return;
+    }
+    setMessages((prev) =>
+      prev.some((m) => m.id === data.id)
+        ? prev
+        : [...prev, { id: data.id, senderId: data.sender_id, recipientId: data.recipient_id, text: data.text, ts: new Date(data.created_at).getTime() }]
+    );
   }
 
   const myThreadIds = Object.keys(threads).filter((id) => threads[id].length > 0);
@@ -863,6 +991,11 @@ export default function MegaphoneApp() {
         .mp-press:active { transform: scale(0.96); opacity: 0.85; }
         .mp-spin { animation: mp-spin 1s linear infinite; }
         @keyframes mp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .mp-pulse-new { animation: mp-glow-pulse 0.9s ease-in-out 3; }
+        @keyframes mp-glow-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(10,132,255,0); }
+          50% { box-shadow: 0 0 0 4px rgba(10,132,255,0.32), 0 0 22px 4px rgba(10,132,255,0.22); }
+        }
         .mp-app { border-radius: 28px; }
         @media (max-width: 640px) {
           .mp-app { border-radius: 0; }
@@ -972,7 +1105,7 @@ export default function MegaphoneApp() {
                 {trending.map((t) => (
                   <button
                     key={t.card}
-                    className="mp-press"
+                    className={justArrivedCards.has(t.card) ? "mp-press mp-pulse-new" : "mp-press"}
                     onClick={() => {
                       setActiveShowId(t.topShowId);
                       setQuery(t.card);
@@ -1252,7 +1385,7 @@ export default function MegaphoneApp() {
                   </div>
                 )}
                 {crossShowResults.map((w) => (
-                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} showName={w.showName} />
+                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} showName={w.showName} isNew={justArrivedIds.has(w.id)} />
                 ))}
               </>
             ) : (
@@ -1265,7 +1398,7 @@ export default function MegaphoneApp() {
                   </div>
                 )}
                 {feedWants.map((w) => (
-                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} />
+                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} isNew={justArrivedIds.has(w.id)} />
                 ))}
               </>
             )}
@@ -1320,7 +1453,7 @@ export default function MegaphoneApp() {
               <div key={uid} className="mp-press" style={{ marginBottom: 10 }}>
                 <Glass radius={18} onClick={() => openChat(uid, chatOrigin)} style={{ padding: "14px 16px", cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <div style={{ fontWeight: 650, fontSize: 15 }}>{personName(uid)}</div>
+                    <div style={{ fontWeight: 650, fontSize: 15 }}>{personName(uid, chatProfiles)}</div>
                     <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(last.ts)}</div>
                   </div>
                   <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -1335,7 +1468,7 @@ export default function MegaphoneApp() {
       )}
 
       {/* ---------------- CHAT THREAD ---------------- */}
-      {screen === "chat" && activeThread && <ChatThread otherId={activeThread} messages={threads[activeThread] || []} onSend={sendMessage} />}
+      {screen === "chat" && activeThread && <ChatThread otherId={activeThread} messages={threads[activeThread] || []} onSend={sendMessage} profiles={chatProfiles} />}
 
       {/* ---------------- ACCOUNT SCREEN ---------------- */}
       {screen === "account" && (
@@ -1350,6 +1483,7 @@ export default function MegaphoneApp() {
           myWants={myWants}
           myThreadIds={myThreadIds}
           threads={threads}
+          chatProfiles={chatProfiles}
           onOpenChat={(uid) => openChat(uid, "account")}
           onMarkFound={markFound}
           canUseAlerts={canUseAlerts}
@@ -1439,7 +1573,7 @@ export default function MegaphoneApp() {
   );
 }
 
-function ChatThread({ otherId, messages, onSend }) {
+function ChatThread({ otherId, messages, onSend, profiles }) {
   const [text, setText] = useState("");
   const bottomRef = useRef(null);
 
@@ -1449,7 +1583,7 @@ function ChatThread({ otherId, messages, onSend }) {
 
   return (
     <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      <div style={{ padding: "10px 18px", fontWeight: 650, fontSize: 15 }}>{personName(otherId)}</div>
+      <div style={{ padding: "10px 18px", fontWeight: 650, fontSize: 15 }}>{personName(otherId, profiles)}</div>
       <div className="mp-scroll" style={{ flex: 1, overflowY: "auto", padding: "6px 16px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
         {messages.length === 0 && (
           <div style={{ textAlign: "center", color: C.inkSoft, fontSize: 13.5, marginTop: 30 }}>
@@ -1509,7 +1643,7 @@ function ChatThread({ otherId, messages, onSend }) {
   );
 }
 
-function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword, watchlist, onAddToWatchlist, onRemoveFromWatchlist }) {
+function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, chatProfiles, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword, watchlist, onAddToWatchlist, onRemoveFromWatchlist }) {
   const [view, setView] = useState("shoutouts");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -1854,7 +1988,7 @@ function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onTog
               <div key={uid} className="mp-press" style={{ marginBottom: 10 }}>
                 <Glass radius={18} onClick={() => onOpenChat(uid)} style={{ padding: "14px 16px", cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <div style={{ fontWeight: 650, fontSize: 15 }}>{personName(uid)}</div>
+                    <div style={{ fontWeight: 650, fontSize: 15 }}>{personName(uid, chatProfiles)}</div>
                     <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.inkFaint }}>{timeAgo(last.ts)}</div>
                   </div>
                   <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
