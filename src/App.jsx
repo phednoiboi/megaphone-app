@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { MapPin, Search, MessageCircle, X, Send, ArrowLeft, Megaphone, Check, Sparkles, User, LogOut, Pin, BadgeCheck, Crown, ExternalLink, TrendingUp, PartyPopper, Flag, Bell, Plus, SlidersHorizontal, Globe, ScanLine, Flame } from "lucide-react";
+import { MapPin, Search, MessageCircle, X, Send, ArrowLeft, Megaphone, Check, Sparkles, User, LogOut, Pin, BadgeCheck, Crown, ExternalLink, TrendingUp, PartyPopper, Flag, Bell, Plus, SlidersHorizontal, Globe, ScanLine, Flame, Trash2 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 // ---------- design tokens (liquid glass) ----------
@@ -39,6 +39,44 @@ function Glass({ children, style, strong, dark, radius = 20, onClick, className 
       }}
     >
       {children}
+    </div>
+  );
+}
+
+// small centered Yes/No overlay, reused for the delete confirmation and the
+// pre-submit "double check your shoutout" step — `children` carries any extra
+// content (e.g. a summary of the card being posted) between the message and buttons
+function ConfirmDialog({ title, message, children, confirmLabel = "Confirm", cancelLabel = "Cancel", danger, confirming, onCancel, onConfirm }) {
+  return (
+    <div
+      style={{ position: "absolute", inset: 0, background: "rgba(28,28,30,0.45)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20, borderRadius: 28, padding: 24 }}
+      onClick={onCancel}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 320 }}>
+        <Glass strong radius={20} style={{ padding: 20 }}>
+          <div style={{ fontSize: 16.5, fontWeight: 700, marginBottom: 8 }}>{title}</div>
+          {message && <div style={{ fontSize: 13.5, color: C.inkSoft, lineHeight: 1.45, marginBottom: children ? 12 : 4 }}>{message}</div>}
+          {children}
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            <button
+              className="mp-press"
+              onClick={onCancel}
+              disabled={confirming}
+              style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: `1px solid ${C.hairline}`, background: "rgba(255,255,255,0.6)", color: C.ink, fontWeight: 650, fontSize: 14 }}
+            >
+              {cancelLabel}
+            </button>
+            <button
+              className="mp-press"
+              onClick={onConfirm}
+              disabled={confirming}
+              style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: danger ? C.red : "linear-gradient(135deg, #FF453A, #FF9500)", color: "white", fontWeight: 650, fontSize: 14 }}
+            >
+              {confirmLabel}
+            </button>
+          </div>
+        </Glass>
+      </div>
     </div>
   );
 }
@@ -129,7 +167,7 @@ function CardTypeahead({ value, onChange, game, placeholder, style }) {
   );
 }
 
-function WantCard({ w, auth, onReport, onChat, showName, isNew }) {
+function WantCard({ w, auth, onReport, onDelete, onChat, showName, isNew }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <Glass
@@ -154,6 +192,17 @@ function WantCard({ w, auth, onReport, onChat, showName, isNew }) {
               aria-label="Report"
             >
               <Flag size={13} />
+            </button>
+          )}
+          {w.userId === auth?.id && onDelete && (
+            <button
+              className="mp-press"
+              onClick={() => onDelete(w.id)}
+              title="Delete this shoutout"
+              style={{ background: "none", border: "none", padding: 2, marginTop: -4, marginRight: -4, color: C.inkFaint }}
+              aria-label="Delete"
+            >
+              <Trash2 size={13} />
             </button>
           )}
         </div>
@@ -356,6 +405,7 @@ export default function MegaphoneApp() {
   const scanInputRef = useRef(null);
   const [watchlist, setWatchlist] = useState([]);
   const [now, setNow] = useState(() => Date.now());
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   // ids/card-names that just arrived live via the wants realtime subscription
   // (never populated by the initial load) — briefly pulsed in the feed and
@@ -816,6 +866,14 @@ export default function MegaphoneApp() {
   async function markFound(wantId) {
     const { error } = await supabase.from("wants").update({ found: true }).eq("id", wantId);
     if (error) console.error("Failed to mark want as found", error);
+  }
+
+  // shoutouts can't be edited, only deleted and reposted — RLS restricts this
+  // to the owner's own rows, so the .eq("user_id", ...) here is belt-and-suspenders
+  async function deleteWant(id) {
+    setWants((prev) => prev.filter((w) => w.id !== id));
+    const { error } = await supabase.from("wants").delete().eq("id", id).eq("user_id", auth.id);
+    if (error) console.error("Failed to delete shoutout", error);
   }
 
   // "scan to search" — captures a photo and identifies the card. Real version
@@ -1385,7 +1443,7 @@ export default function MegaphoneApp() {
                   </div>
                 )}
                 {crossShowResults.map((w) => (
-                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} showName={w.showName} isNew={justArrivedIds.has(w.id)} />
+                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onDelete={setConfirmDeleteId} onChat={(uid) => openChat(uid, "feed")} showName={w.showName} isNew={justArrivedIds.has(w.id)} />
                 ))}
               </>
             ) : (
@@ -1398,7 +1456,7 @@ export default function MegaphoneApp() {
                   </div>
                 )}
                 {feedWants.map((w) => (
-                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onChat={(uid) => openChat(uid, "feed")} isNew={justArrivedIds.has(w.id)} />
+                  <WantCard key={w.id} w={w} auth={auth} onReport={reportWant} onDelete={setConfirmDeleteId} onChat={(uid) => openChat(uid, "feed")} isNew={justArrivedIds.has(w.id)} />
                 ))}
               </>
             )}
@@ -1486,6 +1544,7 @@ export default function MegaphoneApp() {
           chatProfiles={chatProfiles}
           onOpenChat={(uid) => openChat(uid, "account")}
           onMarkFound={markFound}
+          onDelete={setConfirmDeleteId}
           canUseAlerts={canUseAlerts}
           keywordAlerts={keywordAlerts}
           onAddKeyword={addKeyword}
@@ -1544,6 +1603,22 @@ export default function MegaphoneApp() {
 
       {/* ---------------- POST FORM MODAL ---------------- */}
       {showPostForm && <PostForm onClose={() => setShowPostForm(false)} onSubmit={addWant} watchlist={watchlist} />}
+
+      {/* ---------------- DELETE SHOUTOUT CONFIRMATION ---------------- */}
+      {confirmDeleteId && (
+        <ConfirmDialog
+          title="Delete this shoutout?"
+          message="This can't be undone — it'll be removed from the board for everyone."
+          confirmLabel="Delete"
+          cancelLabel="Keep it"
+          danger
+          onCancel={() => setConfirmDeleteId(null)}
+          onConfirm={() => {
+            deleteWant(confirmDeleteId);
+            setConfirmDeleteId(null);
+          }}
+        />
+      )}
 
       {/* ---------------- PAYWALL MODAL ---------------- */}
       {showPaywall && (
@@ -1643,7 +1718,7 @@ function ChatThread({ otherId, messages, onSend, profiles }) {
   );
 }
 
-function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, chatProfiles, onOpenChat, onMarkFound, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword, watchlist, onAddToWatchlist, onRemoveFromWatchlist }) {
+function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onToggleDealer, onOpenPremiumPerks, onOpenDealerPerks, myWants, myThreadIds, threads, chatProfiles, onOpenChat, onMarkFound, onDelete, canUseAlerts, keywordAlerts, onAddKeyword, onRemoveKeyword, watchlist, onAddToWatchlist, onRemoveFromWatchlist }) {
   const [view, setView] = useState("shoutouts");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -1939,11 +2014,24 @@ function AccountScreen({ auth, onSendMagicLink, onLogout, onTogglePremium, onTog
           {myWants.map((w) => (
             <div key={w.id} style={{ marginBottom: 12 }}>
               <Glass radius={18} style={{ padding: "14px 16px" }}>
-                {w.boosted && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8, color: C.gold, fontSize: 10.5, fontWeight: 700 }}>
-                    <Pin size={11} /> BOOSTED
-                  </div>
-                )}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  {w.boosted ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8, color: C.gold, fontSize: 10.5, fontWeight: 700 }}>
+                      <Pin size={11} /> BOOSTED
+                    </div>
+                  ) : (
+                    <div />
+                  )}
+                  <button
+                    className="mp-press"
+                    onClick={() => onDelete(w.id)}
+                    title="Delete this shoutout"
+                    style={{ background: "none", border: "none", padding: 2, marginTop: -4, marginRight: -4, color: C.inkFaint }}
+                    aria-label="Delete"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
                 <div style={{ fontSize: 15.5, fontWeight: 650, letterSpacing: "-0.01em" }}>{w.card}</div>
                 {w.detail && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 4 }}>{w.detail}</div>}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
@@ -2258,20 +2346,29 @@ function PostForm({ onClose, onSubmit, watchlist = [] }) {
   const [boost, setBoost] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  async function handleSubmit() {
+  // shoutouts can't be edited after posting, so we make people re-confirm the
+  // details one more time here, right before the row actually gets written
+  function handlePostClick() {
     const combined = `${card} ${detail}`;
     if (violatesContentPolicy(combined)) {
       setError("This doesn't look like an on-topic card shoutout. Please keep posts focused on Pokémon or One Piece cards.");
       return;
     }
     setError("");
+    setConfirming(true);
+  }
+
+  async function handleConfirmedSubmit() {
     setSubmitting(true);
     const { error: submitError } = await onSubmit({ card: card.trim(), game, detail: detail.trim(), maxPrice: maxPrice.trim(), boosted: boost });
     setSubmitting(false);
     if (submitError) {
+      setConfirming(false);
       setError(submitError.message || "Couldn't post that shoutout. Try again.");
     }
+    // on success onSubmit (addWant) closes the whole form, so nothing left to do here
   }
 
   const fieldStyle = {
@@ -2439,7 +2536,7 @@ function PostForm({ onClose, onSubmit, watchlist = [] }) {
           <button
             className="mp-press"
             disabled={!card.trim() || submitting}
-            onClick={handleSubmit}
+            onClick={handlePostClick}
             style={{
               width: "100%",
               background: card.trim() && !submitting ? "linear-gradient(135deg, #FF453A, #FF9500)" : "rgba(120,120,128,0.25)",
@@ -2460,6 +2557,24 @@ function PostForm({ onClose, onSubmit, watchlist = [] }) {
           </button>
         </Glass>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title="Double-check before posting"
+          message="Once posted, this can't be edited — only deleted and reposted. Please confirm the card name, condition, and price are correct."
+          confirmLabel={submitting ? "Posting…" : "Confirm & post"}
+          cancelLabel="Go back"
+          confirming={submitting}
+          onCancel={() => setConfirming(false)}
+          onConfirm={handleConfirmedSubmit}
+        >
+          <div style={{ background: "rgba(120,120,128,0.08)", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>
+            <div style={{ fontWeight: 650 }}>{card}</div>
+            {detail && <div style={{ color: C.inkSoft, marginTop: 3 }}>{detail}</div>}
+            {maxPrice && <div style={{ color: C.gold, fontWeight: 650, marginTop: 3 }}>up to {maxPrice}</div>}
+          </div>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }
