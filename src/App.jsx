@@ -1054,7 +1054,7 @@ export default function MegaphoneApp() {
             </div>
             {screen === "shows" && (
               <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: "0.02em", color: C.inkFaint }}>
-                Made by xebec.rocks
+                Made by xebec.rocks (staging)
               </div>
             )}
           </div>
