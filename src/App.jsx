@@ -372,7 +372,7 @@ export default function MegaphoneApp() {
         next.delete(id);
         return next;
       });
-    }, 2800);
+    }, 4200);
     setTimeout(() => {
       setJustArrivedCards((prev) => {
         if (!prev.has(cardName)) return prev;
@@ -380,7 +380,7 @@ export default function MegaphoneApp() {
         next.delete(cardName);
         return next;
       });
-    }, 2800);
+    }, 4200);
   }
 
   // ticks so the "next free shoutout" cooldown countdown stays live
@@ -991,10 +991,10 @@ export default function MegaphoneApp() {
         .mp-press:active { transform: scale(0.96); opacity: 0.85; }
         .mp-spin { animation: mp-spin 1s linear infinite; }
         @keyframes mp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .mp-pulse-new { animation: mp-glow-pulse 0.9s ease-in-out 3; }
+        .mp-pulse-new { animation: mp-glow-pulse 1s ease-in-out 4; }
         @keyframes mp-glow-pulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(10,132,255,0); }
-          50% { box-shadow: 0 0 0 4px rgba(10,132,255,0.32), 0 0 22px 4px rgba(10,132,255,0.22); }
+          50% { box-shadow: 0 0 0 5px rgba(10,132,255,0.4), 0 0 26px 6px rgba(10,132,255,0.28); }
         }
         .mp-app { border-radius: 28px; }
         @media (max-width: 640px) {
