@@ -767,6 +767,8 @@ export default function MegaphoneApp() {
       .slice(0, 3);
   }, [wants, activeShowId]);
 
+  // returns { error } so PostForm can surface a rejection (e.g. the
+  // server-side cooldown trigger) instead of failing silently
   async function addWant(entry) {
     const { error } = await supabase.from("wants").insert({
       user_id: auth.id,
@@ -779,10 +781,11 @@ export default function MegaphoneApp() {
     });
     if (error) {
       console.error("Failed to post shoutout", error);
-      return;
+      return { error };
     }
     setShowPostForm(false);
     // the realtime INSERT subscription appends it to `wants` once it lands
+    return { error: null };
   }
 
   async function markFound(wantId) {
@@ -2120,15 +2123,21 @@ function PostForm({ onClose, onSubmit, watchlist = [] }) {
   const [maxPrice, setMaxPrice] = useState("");
   const [boost, setBoost] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const combined = `${card} ${detail}`;
     if (violatesContentPolicy(combined)) {
       setError("This doesn't look like an on-topic card shoutout. Please keep posts focused on Pokémon or One Piece cards.");
       return;
     }
     setError("");
-    onSubmit({ card: card.trim(), game, detail: detail.trim(), maxPrice: maxPrice.trim(), boosted: boost });
+    setSubmitting(true);
+    const { error: submitError } = await onSubmit({ card: card.trim(), game, detail: detail.trim(), maxPrice: maxPrice.trim(), boosted: boost });
+    setSubmitting(false);
+    if (submitError) {
+      setError(submitError.message || "Couldn't post that shoutout. Try again.");
+    }
   }
 
   const fieldStyle = {
@@ -2295,11 +2304,11 @@ function PostForm({ onClose, onSubmit, watchlist = [] }) {
 
           <button
             className="mp-press"
-            disabled={!card.trim()}
+            disabled={!card.trim() || submitting}
             onClick={handleSubmit}
             style={{
               width: "100%",
-              background: card.trim() ? "linear-gradient(135deg, #FF453A, #FF9500)" : "rgba(120,120,128,0.25)",
+              background: card.trim() && !submitting ? "linear-gradient(135deg, #FF453A, #FF9500)" : "rgba(120,120,128,0.25)",
               color: "white",
               border: "none",
               borderRadius: 14,
@@ -2310,10 +2319,10 @@ function PostForm({ onClose, onSubmit, watchlist = [] }) {
               alignItems: "center",
               justifyContent: "center",
               gap: 8,
-              boxShadow: card.trim() ? "0 6px 18px rgba(255,69,58,0.35)" : "none",
+              boxShadow: card.trim() && !submitting ? "0 6px 18px rgba(255,69,58,0.35)" : "none",
             }}
           >
-            <Check size={17} /> {boost ? "Post & Boost ($1.99)" : "Post to the board"}
+            <Check size={17} /> {submitting ? "Posting…" : boost ? "Post & Boost ($1.99)" : "Post to the board"}
           </button>
         </Glass>
       </div>
