@@ -275,10 +275,6 @@ function atTime(daysFromNow, hour, minute) {
   d.setHours(hour, minute, 0, 0);
   return d;
 }
-function daysUntilWeekday(targetDow) {
-  const today = new Date().getDay();
-  return (targetDow - today + 7) % 7;
-}
 function isSameDay(a, b) {
   return a.toDateString() === b.toDateString();
 }
@@ -292,17 +288,6 @@ function formatShowWindow(start, end) {
   const fmt = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `${dayLabel}, ${fmt(start)} – ${fmt(end)}`;
 }
-
-// ---------- mock data ----------
-// in production these come from a live events feed (organizer submissions or a
-// TCG event API) rather than being hardcoded — this just simulates "today" logic
-// against real Date objects so the grouping/badges below are actually live.
-const SHOWS = [
-  { id: "s1", name: "One Piece Card Game SG Regional Qualifier", venue: "Suntec Singapore Convention Centre", lat: 1.2966, lng: 103.8577, start: atTime(0, 9, 0), end: atTime(0, 17, 0) },
-  { id: "s2", name: "Pokémon TCG Community League Night", venue: "Games Mansion, Peninsula Shopping Centre", lat: 1.2936, lng: 103.8500, start: atTime(0, 10, 0), end: atTime(0, 16, 0) },
-  { id: "s3", name: "Bishan Card Traders Meetup", venue: "Bishan Community Club, Hall 2", lat: 1.3506, lng: 103.8496, start: atTime(1, 9, 0), end: atTime(1, 18, 0) },
-  { id: "s4", name: "Toa Payoh Bounty Hunters One Piece Meet", venue: "Toa Payoh HDB Hub, Atrium", lat: 1.3326, lng: 103.8489, start: atTime(daysUntilWeekday(6) || 7, 11, 0), end: atTime(daysUntilWeekday(6) || 7, 19, 0) },
-];
 
 // free accounts can shout unlimited cards, just no more than once per hour —
 // Premium removes the wait entirely
@@ -383,6 +368,7 @@ export default function MegaphoneApp() {
   const [coords, setCoords] = useState(null);
   const [geoState, setGeoState] = useState("idle");
   const [wants, setWants] = useState([]);
+  const [shows, setShows] = useState([]);
   const profileCacheRef = useRef({});
   const [chatProfiles, setChatProfiles] = useState({});
   const [messages, setMessages] = useState([]);
@@ -589,6 +575,60 @@ export default function MegaphoneApp() {
     };
   }, []);
 
+  // maps a `shows` row onto the shape the rest of the UI expects (Date
+  // objects for start/end, matching what the old hardcoded SHOWS array gave it)
+  function decorateShow(row) {
+    return {
+      id: row.id,
+      createdBy: row.created_by,
+      name: row.name,
+      venue: row.venue,
+      lat: row.lat,
+      lng: row.lng,
+      start: new Date(row.start_at),
+      end: new Date(row.end_at),
+    };
+  }
+
+  // shows board — loaded once, then kept live via a postgres_changes
+  // subscription so a dealer's newly-created show appears for everyone
+  // without a refresh, same pattern as the wants feed above
+  useEffect(() => {
+    let active = true;
+
+    async function loadShows() {
+      const { data, error } = await supabase.from("shows").select("*").order("start_at", { ascending: true });
+      if (!active) return;
+      if (error) {
+        console.error("Failed to load shows", error);
+        return;
+      }
+      setShows(data.map(decorateShow));
+    }
+    loadShows();
+
+    const channel = supabase
+      .channel("shows-list")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "shows" }, (payload) => {
+        const row = payload.new;
+        if (!active) return;
+        setShows((prev) => (prev.some((s) => s.id === row.id) ? prev : [...prev, decorateShow(row)]));
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shows" }, (payload) => {
+        const row = payload.new;
+        setShows((prev) => prev.map((s) => (s.id === row.id ? decorateShow(row) : s)));
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "shows" }, (payload) => {
+        setShows((prev) => prev.filter((s) => s.id !== payload.old.id));
+      })
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   // keyword alerts — scoped to the signed-in user, loaded fresh on login and
   // kept live so an alert added on another device shows up here too
   useEffect(() => {
@@ -717,10 +757,11 @@ export default function MegaphoneApp() {
 
   const showsWithDistance = useMemo(() => {
     const now = new Date();
-    return SHOWS.filter((s) => s.end >= now)
+    return shows
+      .filter((s) => s.end >= now)
       .map((s) => ({
         ...s,
-        distance: coords ? haversine(coords.lat, coords.lng, s.lat, s.lng) : null,
+        distance: coords && s.lat != null && s.lng != null ? haversine(coords.lat, coords.lng, s.lat, s.lng) : null,
         isToday: isSameDay(s.start, now),
         whenLabel: formatShowWindow(s.start, s.end),
       }))
@@ -729,7 +770,7 @@ export default function MegaphoneApp() {
         if (a.distance == null || b.distance == null) return a.start - b.start;
         return a.distance - b.distance;
       });
-  }, [coords]);
+  }, [shows, coords]);
   const todayShows = showsWithDistance.filter((s) => s.isToday);
   const upcomingShows = showsWithDistance.filter((s) => !s.isToday);
 
@@ -788,11 +829,11 @@ export default function MegaphoneApp() {
       })
       .map((w) => ({
         ...w,
-        showName: SHOWS.find((s) => s.id === w.showId)?.name || "",
+        showName: shows.find((s) => s.id === w.showId)?.name || "",
         matchedKeyword: keywordAlerts.find((k) => `${w.card} ${w.detail || ""}`.toLowerCase().includes(k.toLowerCase())),
       }))
       .sort((a, b) => b.ts - a.ts);
-  }, [wants, keywordAlerts, canUseAlerts]);
+  }, [wants, keywordAlerts, canUseAlerts, shows]);
   const unreadAlertCount = alertMatches.filter((m) => !readAlertIds.includes(m.id)).length;
   function openAlerts(origin) {
     setAlertsOrigin(origin);
@@ -800,7 +841,7 @@ export default function MegaphoneApp() {
     setScreen("alerts");
   }
 
-  const activeShow = SHOWS.find((s) => s.id === activeShowId);
+  const activeShow = shows.find((s) => s.id === activeShowId);
 
   function matchesFilters(w) {
     if (gameFilter !== "all" && w.game !== gameFilter) return false;
@@ -826,9 +867,9 @@ export default function MegaphoneApp() {
     return wants
       .filter((w) => !w.hidden)
       .filter(matchesFilters)
-      .map((w) => ({ ...w, showName: SHOWS.find((s) => s.id === w.showId)?.name || "" }))
+      .map((w) => ({ ...w, showName: shows.find((s) => s.id === w.showId)?.name || "" }))
       .sort((a, b) => b.ts - a.ts);
-  }, [wants, searchAllShows, query, gameFilter, boostedOnly, dealersOnly, auth]);
+  }, [wants, searchAllShows, query, gameFilter, boostedOnly, dealersOnly, auth, shows]);
 
   const activeFilterCount = (gameFilter !== "all" ? 1 : 0) + (boostedOnly ? 1 : 0) + (dealersOnly ? 1 : 0);
 
@@ -866,6 +907,28 @@ export default function MegaphoneApp() {
   async function markFound(wantId) {
     const { error } = await supabase.from("wants").update({ found: true }).eq("id", wantId);
     if (error) console.error("Failed to mark want as found", error);
+  }
+
+  // Verified Dealer accounts can list a show — RLS enforces both the
+  // `created_by = auth.uid()` and `profiles.dealer = true` checks server-side,
+  // so this insert is rejected outright for anyone else even if this screen
+  // were somehow reached without the button gate below
+  async function createShow({ name, venue, startAt, endAt, lat, lng }) {
+    const { error } = await supabase.from("shows").insert({
+      created_by: auth.id,
+      name,
+      venue,
+      start_at: startAt,
+      end_at: endAt,
+      lat,
+      lng,
+    });
+    if (error) {
+      console.error("Failed to create show", error);
+      return { error };
+    }
+    // the realtime INSERT subscription appends it to `shows` once it lands
+    return { error: null };
   }
 
   // shoutouts can't be edited, only deleted and reposted — RLS restricts this
@@ -1012,7 +1075,7 @@ export default function MegaphoneApp() {
   const myThreadIds = Object.keys(threads).filter((id) => threads[id].length > 0);
   const myWants = wants
     .filter((w) => w.userId === auth.id)
-    .map((w) => ({ ...w, showName: SHOWS.find((s) => s.id === w.showId)?.name || "" }))
+    .map((w) => ({ ...w, showName: shows.find((s) => s.id === w.showId)?.name || "" }))
     .sort((a, b) => b.ts - a.ts);
   const lastShoutTs = myWants[0]?.ts || null;
   const cooldownRemainingMs = !auth.premium && lastShoutTs ? FREE_SHOUT_COOLDOWN_MS - (now - lastShoutTs) : 0;
@@ -1095,6 +1158,7 @@ export default function MegaphoneApp() {
                 else if (screen === "chatlist") setScreen(chatOrigin);
                 else if (screen === "feed") setScreen("shows");
                 else if (screen === "alerts") setScreen(alertsOrigin);
+                else if (screen === "createShow") setScreen("shows");
               }}
               style={{ background: "rgba(255,255,255,0.6)", border: "none", borderRadius: 999, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}
               aria-label="Back"
@@ -1109,6 +1173,7 @@ export default function MegaphoneApp() {
               {(screen === "chatlist" || screen === "chat") && "Messages"}
               {screen === "account" && "Account"}
               {screen === "alerts" && "Card Alerts"}
+              {screen === "createShow" && "Create Show"}
             </div>
             {screen === "shows" && (
               <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: "0.02em", color: C.inkFaint }}>
@@ -1118,6 +1183,17 @@ export default function MegaphoneApp() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {auth.dealer && screen === "shows" && (
+            <button
+              className="mp-press"
+              onClick={() => setScreen("createShow")}
+              style={{ background: "rgba(255,255,255,0.6)", border: "none", borderRadius: 999, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}
+              aria-label="Create a show"
+              title="Create a show"
+            >
+              <Plus size={18} color={C.blue} />
+            </button>
+          )}
           {canUseAlerts && (screen === "shows" || screen === "feed" || screen === "account") && (
             <button
               className="mp-press"
@@ -1555,6 +1631,9 @@ export default function MegaphoneApp() {
         />
       )}
 
+      {/* ---------------- CREATE SHOW SCREEN ---------------- */}
+      {screen === "createShow" && auth.dealer && <CreateShowScreen onSubmit={createShow} onDone={() => setScreen("shows")} />}
+
       {/* ---------------- CARD ALERTS SCREEN ---------------- */}
       {screen === "alerts" && (
         <AlertsScreen
@@ -1714,6 +1793,124 @@ function ChatThread({ otherId, messages, onSend, profiles }) {
           <Send size={17} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// Verified Dealer-only show creation screen. `onSubmit` inserts into the
+// `shows` table (RLS re-checks the dealer flag server-side); the new show
+// appears on the Shows board via the realtime subscription, same as any
+// other live-created row.
+function CreateShowScreen({ onSubmit, onDone }) {
+  const [name, setName] = useState("");
+  const [venue, setVenue] = useState("");
+  const [startAt, setStartAt] = useState("");
+  const [endAt, setEndAt] = useState("");
+  const [lat, setLat] = useState("");
+  const [lng, setLng] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const fieldStyle = {
+    width: "100%",
+    marginTop: 6,
+    marginBottom: 14,
+    border: `1px solid ${C.hairline}`,
+    background: "rgba(255,255,255,0.6)",
+    borderRadius: 12,
+    padding: "11px 14px",
+    fontSize: 14.5,
+    outline: "none",
+    boxSizing: "border-box",
+    fontFamily: FONT,
+  };
+
+  const canSubmit = name.trim() && venue.trim() && startAt && endAt;
+
+  async function handleSubmit() {
+    if (!canSubmit || submitting) return;
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (end <= start) {
+      setError("End time must be after the start time.");
+      return;
+    }
+    setError("");
+    setSubmitting(true);
+    const { error } = await onSubmit({
+      name: name.trim(),
+      venue: venue.trim(),
+      startAt: start.toISOString(),
+      endAt: end.toISOString(),
+      lat: lat.trim() ? parseFloat(lat) : null,
+      lng: lng.trim() ? parseFloat(lng) : null,
+    });
+    setSubmitting(false);
+    if (error) {
+      setError(error.message || "Couldn't create the show. Try again.");
+      return;
+    }
+    onDone();
+  }
+
+  return (
+    <div className="mp-scroll" style={{ position: "relative", zIndex: 1, padding: "16px 16px 90px", overflowY: "auto", flex: 1 }}>
+      <Glass radius={22} style={{ padding: "20px 20px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <BadgeCheck size={16} color={C.purple} />
+          <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>List a show</div>
+        </div>
+        <div style={{ fontSize: 13.5, color: C.inkSoft, marginBottom: 16, lineHeight: 1.4 }}>
+          It shows up on the board for everyone right away, sorted alongside every other show.
+        </div>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Show name</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bishan Card Traders Meetup" style={fieldStyle} />
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Venue</label>
+        <input value={venue} onChange={(e) => setVenue(e.target.value)} placeholder="e.g. Bishan Community Club, Hall 2" style={fieldStyle} />
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Starts</label>
+        <input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} style={fieldStyle} />
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Ends</label>
+        <input type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} style={fieldStyle} />
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Location (optional — powers "sorted by distance")</label>
+        <div style={{ display: "flex", gap: 10 }}>
+          <input value={lat} onChange={(e) => setLat(e.target.value)} placeholder="Latitude" inputMode="decimal" style={{ ...fieldStyle, flex: 1 }} />
+          <input value={lng} onChange={(e) => setLng(e.target.value)} placeholder="Longitude" inputMode="decimal" style={{ ...fieldStyle, flex: 1 }} />
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: 12, padding: "10px 12px", background: "rgba(255,59,48,0.1)", borderRadius: 10, color: C.red, fontSize: 12.5, fontWeight: 600 }}>
+            <Flag size={13} style={{ marginTop: 1, flexShrink: 0 }} /> {error}
+          </div>
+        )}
+
+        <button
+          className="mp-press"
+          disabled={!canSubmit || submitting}
+          onClick={handleSubmit}
+          style={{
+            width: "100%",
+            background: canSubmit && !submitting ? C.blue : "rgba(120,120,128,0.25)",
+            color: "white",
+            border: "none",
+            borderRadius: 14,
+            padding: "13px",
+            fontWeight: 650,
+            fontSize: 15,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            boxShadow: canSubmit ? "0 6px 16px rgba(10,132,255,0.35)" : "none",
+          }}
+        >
+          <Check size={17} /> {submitting ? "Creating…" : "Create show"}
+        </button>
+      </Glass>
     </div>
   );
 }
