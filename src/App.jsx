@@ -1827,6 +1827,10 @@ function CreateShowScreen({ onSubmit, onDone }) {
     if (!canSubmit || submitting) return;
     const start = new Date(startAt);
     const end = new Date(endAt);
+    if (end <= new Date()) {
+      setError("This event's date has already passed, so it won't be created. Pick a date and time that hasn't happened yet.");
+      return;
+    }
     if (end <= start) {
       setError("End time must be after the start time.");
       return;
