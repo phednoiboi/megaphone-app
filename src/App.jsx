@@ -913,15 +913,13 @@ export default function MegaphoneApp() {
   // `created_by = auth.uid()` and `profiles.dealer = true` checks server-side,
   // so this insert is rejected outright for anyone else even if this screen
   // were somehow reached without the button gate below
-  async function createShow({ name, venue, startAt, endAt, lat, lng }) {
+  async function createShow({ name, venue, startAt, endAt }) {
     const { error } = await supabase.from("shows").insert({
       created_by: auth.id,
       name,
       venue,
       start_at: startAt,
       end_at: endAt,
-      lat,
-      lng,
     });
     if (error) {
       console.error("Failed to create show", error);
@@ -1806,8 +1804,6 @@ function CreateShowScreen({ onSubmit, onDone }) {
   const [venue, setVenue] = useState("");
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
-  const [lat, setLat] = useState("");
-  const [lng, setLng] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -1842,8 +1838,6 @@ function CreateShowScreen({ onSubmit, onDone }) {
       venue: venue.trim(),
       startAt: start.toISOString(),
       endAt: end.toISOString(),
-      lat: lat.trim() ? parseFloat(lat) : null,
-      lng: lng.trim() ? parseFloat(lng) : null,
     });
     setSubmitting(false);
     if (error) {
@@ -1875,12 +1869,6 @@ function CreateShowScreen({ onSubmit, onDone }) {
 
         <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Ends</label>
         <input type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} style={fieldStyle} />
-
-        <label style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft }}>Location (optional — powers "sorted by distance")</label>
-        <div style={{ display: "flex", gap: 10 }}>
-          <input value={lat} onChange={(e) => setLat(e.target.value)} placeholder="Latitude" inputMode="decimal" style={{ ...fieldStyle, flex: 1 }} />
-          <input value={lng} onChange={(e) => setLng(e.target.value)} placeholder="Longitude" inputMode="decimal" style={{ ...fieldStyle, flex: 1 }} />
-        </div>
 
         {error && (
           <div style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: 12, padding: "10px 12px", background: "rgba(255,59,48,0.1)", borderRadius: 10, color: C.red, fontSize: 12.5, fontWeight: 600 }}>
